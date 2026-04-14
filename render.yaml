@@ -1,0 +1,20 @@
+# render.yaml — Configuration déploiement automatique sur Render.com
+# Mets ce fichier à la RACINE de ton repo remotion-backend
+
+services:
+  - type: web
+    name: autotube-remotion-backend
+    runtime: node
+    plan: free          # Plan gratuit (750h/mois — suffisant)
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: FRONTEND_URL
+        # ⚠ Remplace par ton URL GitHub Pages
+        value: https://TON_USERNAME.github.io
+    healthCheckPath: /health
+    autoDeploy: true    # Re-déploie automatiquement à chaque push
