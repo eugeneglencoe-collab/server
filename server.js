@@ -5,14 +5,9 @@ const fetch = require('node-fetch');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// CORS — autorise ton GitHub Pages
-app.use(cors({
-  origin: [
-    'https://eugeneglencoe-collab.github.io',
-    'http://localhost:3000',
-    'http://localhost:8080',
-  ]
-}));
+// CORS ouvert — autorise tout pour déboguer
+// Une fois que ça marche, tu pourras restreindre à ton URL GitHub Pages
+app.use(cors());
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -127,7 +122,6 @@ app.post('/generate-image', async (req, res) => {
   if (!repKey) return res.status(400).json({ error: 'Clé Replicate manquante' });
 
   try {
-    // Créer la prédiction
     const createRes = await fetch('https://api.replicate.com/v1/predictions', {
       method: 'POST',
       headers: {
