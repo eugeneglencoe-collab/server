@@ -5,25 +5,29 @@ const fetch = require('node-fetch');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// CORS ouvert — autorise tout pour déboguer
-// Une fois que ça marche, tu pourras restreindre à ton URL GitHub Pages
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://eugeneglencoe-collab.github.io',
+    'http://localhost:3000',
+    'http://localhost:8080',
+  ]
+}));
 
 app.use(express.json({ limit: '10mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '1.0.0' });
+  res.json({ status: 'AutoTube backend running ✓', version: '2.0.0', ai: 'Gemini' });
 });
 
-// ── CLAUDE — Génération de script ────────────────────────
+// ── GEMINI — Génération de script ────────────────────────
 app.post('/generate-script', async (req, res) => {
   const { topic, tags, duration, apiKey } = req.body;
 
   if (!topic) return res.status(400).json({ error: 'topic manquant' });
 
-  const claudeKey = apiKey || process.env.CLAUDE_API_KEY;
-  if (!claudeKey) return res.status(400).json({ error: 'Clé Claude manquante' });
+  const geminiKey = apiKey || process.env.GEMINI_API_KEY;
+  if (!geminiKey) return res.status(400).json({ error: 'Clé Gemini manquante' });
 
   const prompt = `Tu es un expert en création de contenu YouTube francophone.
 
@@ -31,7 +35,7 @@ Génère un script complet pour une vidéo YouTube sur : "${topic}"
 Tags/Niche : ${(tags||[]).join(', ')}
 Durée cible : ${duration || '5-8 min'}
 
-Réponds UNIQUEMENT en JSON valide avec cette structure exacte :
+Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte avant ou après :
 {
   "title": "Titre accrocheur (max 60 chars)",
   "description": "Description YouTube complète avec keywords (300-500 chars)",
@@ -42,34 +46,40 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte :
 }`;
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': claudeKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-opus-4-5',
-        max_tokens: 2000,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 2000,
+          },
+        }),
+      }
+    );
 
     const data = await response.json();
 
     if (!response.ok) {
-      return res.status(response.status).json({ error: data.error?.message || 'Erreur Claude' });
+      return res.status(response.status).json({ error: data.error?.message || 'Erreur Gemini' });
     }
 
-    const text = data.content[0].text;
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const clean = text.replace(/```json|```/g, '').trim();
     const script = JSON.parse(clean);
 
-    res.json({ script, usage: data.usage });
+    const usage = {
+      input_tokens: data.usageMetadata?.promptTokenCount || 0,
+      output_tokens: data.usageMetadata?.candidatesTokenCount || 0,
+    };
+
+    res.json({ script, usage });
 
   } catch (err) {
-    console.error('Claude error:', err);
+    console.error('Gemini error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -84,18 +94,21 @@ app.post('/generate-voice', async (req, res) => {
   if (!elKey) return res.status(400).json({ error: 'Clé ElevenLabs manquante' });
 
   try {
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId || 'pNInz6obpgDQGcFmaJgB'}`, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': elKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text,
-        model_id: 'eleven_multilingual_v2',
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-      }),
-    });
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId || 'pNInz6obpgDQGcFmaJgB'}`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': elKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        }),
+      }
+    );
 
     if (!response.ok) {
       const err = await response.text();
@@ -141,7 +154,6 @@ app.post('/generate-image', async (req, res) => {
     const prediction = await createRes.json();
     if (!createRes.ok) return res.status(createRes.status).json({ error: prediction.detail });
 
-    // Poll jusqu'à complétion
     let result = prediction;
     let tries = 0;
     while (result.status !== 'succeeded' && result.status !== 'failed' && tries < 30) {
@@ -184,5 +196,5 @@ app.get('/elevenlabs-quota', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend running on port ${PORT}`);
+  console.log(`AutoTube backend v2 running on port ${PORT} — AI: Gemini 1.5 Flash`);
 });
