@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const FormData = require('form-data');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -130,7 +131,8 @@ app.post('/generate-image', async (req, res) => {
   if (!stabilityKey) return res.status(400).json({ error: 'Clé Stability AI manquante' });
 
   try {
-    const formData = new URLSearchParams();
+    // ✅ Vrai multipart/form-data avec le package form-data
+    const formData = new FormData();
     formData.append('prompt', `${prompt}, cinematic, high quality, 4k`);
     formData.append('output_format', 'jpeg');
     formData.append('width', '1344');
@@ -144,6 +146,7 @@ app.post('/generate-image', async (req, res) => {
         headers: {
           'Authorization': `Bearer ${stabilityKey}`,
           'Accept': 'image/*',
+          ...formData.getHeaders(), // ✅ injecte le bon Content-Type avec le boundary
         },
         body: formData,
       }
@@ -154,7 +157,6 @@ app.post('/generate-image', async (req, res) => {
       return res.status(response.status).json({ error: err.message || err.errors?.[0] || response.status });
     }
 
-    // Convertir l'image en base64 pour la renvoyer
     const buffer = await response.buffer();
     const base64 = buffer.toString('base64');
     const dataUrl = `data:image/jpeg;base64,${base64}`;
