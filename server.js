@@ -55,7 +55,7 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0.7,
-            maxOutputTokens: 2000,
+            maxOutputTokens: 8192,
           },
         }),
       }
