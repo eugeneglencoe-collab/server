@@ -2,6 +2,13 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const FormData = require('form-data');
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegStatic = require('ffmpeg-static');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+ffmpeg.setFfmpegPath(ffmpegStatic);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -14,11 +21,11 @@ app.use(cors({
   ]
 }));
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '5.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech + Stability AI' });
+  res.json({ status: 'AutoTube backend running ✓', version: '6.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech + Stability AI' });
 });
 
 // ── GEMINI — Génération de script ────────────────────────
@@ -133,7 +140,7 @@ app.post('/generate-image', async (req, res) => {
   const geminiKey = process.env.GEMINI_API_KEY;
 
   try {
-    // ── Traduction FR → EN via Gemini si nécessaire ──────
+    // ── Traduction FR → EN via Gemini ────────────────────
     let englishPrompt = prompt;
     if (geminiKey) {
       const transResp = await fetch(
@@ -152,7 +159,6 @@ app.post('/generate-image', async (req, res) => {
       if (translated) englishPrompt = translated;
     }
 
-    // ── Génération image Stability AI ────────────────────
     const formData = new FormData();
     formData.append('prompt', `${englishPrompt}, cinematic, high quality, 4k`);
     formData.append('output_format', 'jpeg');
@@ -190,11 +196,138 @@ app.post('/generate-image', async (req, res) => {
   }
 });
 
+// ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE ────────────────────
+app.post('/assemble-and-publish', async (req, res) => {
+  const { images, audioUrl, script, tags, privacy, ytToken } = req.body;
+  if (!images || !images.length) return res.status(400).json({ error: 'images manquantes' });
+  if (!audioUrl) return res.status(400).json({ error: 'audioUrl manquant' });
+  if (!ytToken)  return res.status(400).json({ error: 'token YouTube manquant' });
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotube-'));
+
+  try {
+    // 1. Sauvegarder les images en fichiers JPEG
+    const imagePaths = [];
+    for (let i = 0; i < images.length; i++) {
+      const base64 = images[i].replace(/^data:image\/\w+;base64,/, '');
+      const imgPath = path.join(tmpDir, `img_${i}.jpg`);
+      fs.writeFileSync(imgPath, Buffer.from(base64, 'base64'));
+      imagePaths.push(imgPath);
+    }
+
+    // 2. Télécharger l'audio
+    const audioResp = await fetch(audioUrl);
+    const audioBuffer = await audioResp.buffer();
+    const audioPath = path.join(tmpDir, 'audio.mp3');
+    fs.writeFileSync(audioPath, audioBuffer);
+
+    // 3. Créer un fichier texte listant les images pour ffmpeg (concat)
+    const concatPath = path.join(tmpDir, 'concat.txt');
+    const audioDuration = await getAudioDuration(audioPath);
+    const durationPerImage = audioDuration / imagePaths.length;
+
+    const concatContent = imagePaths.map(p =>
+      `file '${p}'\nduration ${durationPerImage.toFixed(3)}`
+    ).join('\n') + `\nfile '${imagePaths[imagePaths.length - 1]}'`;
+    fs.writeFileSync(concatPath, concatContent);
+
+    // 4. Assembler avec ffmpeg
+    const videoPath = path.join(tmpDir, 'video.mp4');
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(concatPath)
+        .inputOptions(['-f concat', '-safe 0'])
+        .input(audioPath)
+        .outputOptions([
+          '-c:v libx264',
+          '-c:a aac',
+          '-pix_fmt yuv420p',
+          '-shortest',
+          '-movflags +faststart',
+          '-vf scale=1344:768:force_original_aspect_ratio=decrease,pad=1344:768:(ow-iw)/2:(oh-ih)/2',
+        ])
+        .output(videoPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    // 5. Upload sur YouTube en multipart
+    const videoBuffer = fs.readFileSync(videoPath);
+    const metadata = {
+      snippet: {
+        title: script.title,
+        description: script.description,
+        tags: [...(script.tags || []), ...(tags || [])],
+        categoryId: '22',
+        defaultLanguage: 'fr',
+      },
+      status: { privacyStatus: privacy || 'private' },
+    };
+
+    // Upload en deux étapes : d'abord les métadonnées, puis le fichier
+    const boundary = '-------314159265358979323846';
+    const delimiter = `\r\n--${boundary}\r\n`;
+    const closeDelimiter = `\r\n--${boundary}--`;
+
+    const metaPart = delimiter +
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+      JSON.stringify(metadata);
+    const videoPart = delimiter +
+      'Content-Type: video/mp4\r\n\r\n';
+
+    const body = Buffer.concat([
+      Buffer.from(metaPart),
+      Buffer.from(videoPart),
+      videoBuffer,
+      Buffer.from(closeDelimiter),
+    ]);
+
+    const ytResp = await fetch(
+      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=multipart&part=snippet,status',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${ytToken}`,
+          'Content-Type': `multipart/related; boundary="${boundary}"`,
+          'Content-Length': body.length,
+        },
+        body,
+      }
+    );
+
+    if (!ytResp.ok) {
+      const err = await ytResp.json();
+      throw new Error(err.error?.message || ytResp.status);
+    }
+
+    const ytData = await ytResp.json();
+    res.json({ success: true, youtubeId: ytData.id, title: script.title });
+
+  } catch (err) {
+    console.error('Assemble/publish error:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    // Nettoyage des fichiers temporaires
+    try { fs.rmSync(tmpDir, { recursive: true }); } catch(e) {}
+  }
+});
+
+// ── UTILITAIRE — durée audio ──────────────────────────────
+function getAudioDuration(audioPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(audioPath, (err, metadata) => {
+      if (err) reject(err);
+      else resolve(metadata.format.duration || 60);
+    });
+  });
+}
+
 // ── QUOTA VOIX ───────────────────────────────────────────
 app.get('/elevenlabs-quota', async (req, res) => {
   res.json({ used: 0, total: 250000 });
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v5 — Gemini 2.5 Flash + Unreal Speech + Stability AI`);
+  console.log(`AutoTube backend v6 — Gemini + Unreal Speech + Stability AI + ffmpeg`);
 });
