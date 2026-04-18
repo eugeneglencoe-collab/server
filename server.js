@@ -139,7 +139,7 @@ app.post('/generate-image', async (req, res) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        version: '39ed52f2319f9b697792cf2c47f2c8f6bfc3b4d63c1f2e5d3a4f5a9a5b5c5d5e',
+        version: 'ac732df83cea7fff18b8472768c88ad041fa750ff7682a21affe81863cbe77e4',
         input: {
           prompt: `${prompt}, cinematic, high quality, 4k`,
           width: 1280, height: 720,
