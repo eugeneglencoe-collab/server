@@ -130,9 +130,31 @@ app.post('/generate-image', async (req, res) => {
   const stabilityKey = apiKey || process.env.STABILITY_API_KEY;
   if (!stabilityKey) return res.status(400).json({ error: 'Clé Stability AI manquante' });
 
+  const geminiKey = process.env.GEMINI_API_KEY;
+
   try {
+    // ── Traduction FR → EN via Gemini si nécessaire ──────
+    let englishPrompt = prompt;
+    if (geminiKey) {
+      const transResp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: `Translate this image generation prompt to English. Return ONLY the translated prompt, nothing else:\n\n${prompt}` }] }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 256 },
+          }),
+        }
+      );
+      const transData = await transResp.json();
+      const translated = transData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (translated) englishPrompt = translated;
+    }
+
+    // ── Génération image Stability AI ────────────────────
     const formData = new FormData();
-    formData.append('prompt', `${prompt}, cinematic, high quality, 4k`);
+    formData.append('prompt', `${englishPrompt}, cinematic, high quality, 4k`);
     formData.append('output_format', 'jpeg');
     formData.append('width', '1344');
     formData.append('height', '768');
