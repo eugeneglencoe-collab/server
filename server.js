@@ -47,7 +47,7 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -196,5 +196,5 @@ app.get('/elevenlabs-quota', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v2 running on port ${PORT} — AI: Gemini 1.5 Flash`);
+  console.log(`AutoTube backend v2 running on port ${PORT} — AI: Gemini 2.0 Flash`);
 });
