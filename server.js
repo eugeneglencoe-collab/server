@@ -17,13 +17,12 @@ app.use(express.json({ limit: '10mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '3.0.0', ai: 'Gemini + OpenAI TTS' });
+  res.json({ status: 'AutoTube backend running ✓', version: '4.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech' });
 });
 
 // ── GEMINI — Génération de script ────────────────────────
 app.post('/generate-script', async (req, res) => {
   const { topic, tags, duration, apiKey } = req.body;
-
   if (!topic) return res.status(400).json({ error: 'topic manquant' });
 
   const geminiKey = apiKey || process.env.GEMINI_API_KEY;
@@ -53,29 +52,21 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 8192,
-          },
+          generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
         }),
       }
     );
 
     const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(response.status).json({ error: data.error?.message || 'Erreur Gemini' });
-    }
+    if (!response.ok) return res.status(response.status).json({ error: data.error?.message || 'Erreur Gemini' });
 
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const clean = text.replace(/```json|```/g, '').trim();
     const script = JSON.parse(clean);
-
     const usage = {
       input_tokens: data.usageMetadata?.promptTokenCount || 0,
       output_tokens: data.usageMetadata?.candidatesTokenCount || 0,
     };
-
     res.json({ script, usage });
 
   } catch (err) {
@@ -84,49 +75,50 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte
   }
 });
 
-// ── OPENAI TTS — Synthèse vocale ─────────────────────────
+// ── UNREAL SPEECH — Synthèse vocale ──────────────────────
 app.post('/generate-voice', async (req, res) => {
   const { text, voiceId, apiKey } = req.body;
-
   if (!text) return res.status(400).json({ error: 'text manquant' });
 
-  const openaiKey = apiKey || process.env.OPENAI_API_KEY;
-  if (!openaiKey) return res.status(400).json({ error: 'Clé OpenAI manquante' });
+  const unrealKey = apiKey || process.env.UNREAL_SPEECH_API_KEY;
+  if (!unrealKey) return res.status(400).json({ error: 'Clé Unreal Speech manquante' });
 
-  // Mapping des voix ElevenLabs → OpenAI
+  // Mapping des noms de voix → voix Unreal Speech
   const voiceMap = {
-    'pNInz6obpgDQGcFmaJgB': 'onyx',   // Neutre (Adam) → onyx
-    'TxGEqnHWrfWFTfGW9XjX': 'echo',   // Dynamique (Josh) → echo
-    '21m00Tcm4TlvDq8ikWAM': 'nova',   // Calme (Rachel) → nova
+    'Neutre (Adam)':    'Scarlett',
+    'Dynamique (Josh)': 'Dan',
+    'Calme (Rachel)':   'Liv',
   };
-  const voice = voiceMap[voiceId] || 'onyx';
+  const voice = voiceMap[voiceId] || 'Scarlett';
 
   try {
-    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+    const response = await fetch('https://api.v7.unrealspeech.com/speech', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${openaiKey}`,
+        'Authorization': `Bearer ${unrealKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'tts-1',
-        input: text,
-        voice: voice,
-        response_format: 'mp3',
+        Text: text,
+        VoiceId: voice,
+        Bitrate: '192k',
+        Speed: '0',
+        Pitch: '1',
+        OutputFormat: 'uri',
       }),
     });
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      return res.status(response.status).json({ error: err.error?.message || response.status });
+      return res.status(response.status).json({ error: err.message || err.error || response.status });
     }
 
-    const audioBuffer = await response.buffer();
-    res.set('Content-Type', 'audio/mpeg');
-    res.send(audioBuffer);
+    const data = await response.json();
+    // Unreal Speech retourne une URL — on la renvoie au client
+    res.json({ audioUrl: data.OutputUri });
 
   } catch (err) {
-    console.error('OpenAI TTS error:', err);
+    console.error('Unreal Speech error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -134,7 +126,6 @@ app.post('/generate-voice', async (req, res) => {
 // ── REPLICATE — Génération d'images ──────────────────────
 app.post('/generate-image', async (req, res) => {
   const { prompt, apiKey } = req.body;
-
   if (!prompt) return res.status(400).json({ error: 'prompt manquant' });
 
   const repKey = apiKey || process.env.REPLICATE_API_KEY;
@@ -151,8 +142,7 @@ app.post('/generate-image', async (req, res) => {
         version: '39ed52f2319f9b697792cf2c47f2c8f6bfc3b4d63c1f2e5d3a4f5a9a5b5c5d5e',
         input: {
           prompt: `${prompt}, cinematic, high quality, 4k`,
-          width: 1280,
-          height: 720,
+          width: 1280, height: 720,
         },
       }),
     });
@@ -173,7 +163,6 @@ app.post('/generate-image', async (req, res) => {
 
     if (result.status === 'failed') return res.status(500).json({ error: 'Replicate failed: ' + result.error });
     if (result.status !== 'succeeded') return res.status(500).json({ error: 'Timeout Replicate' });
-
     res.json({ url: result.output[0] });
 
   } catch (err) {
@@ -182,12 +171,11 @@ app.post('/generate-image', async (req, res) => {
   }
 });
 
-// ── QUOTA VOIX (placeholder) ─────────────────────────────
+// ── QUOTA VOIX ───────────────────────────────────────────
 app.get('/elevenlabs-quota', async (req, res) => {
-  // OpenAI TTS est pay-as-you-go, pas de quota fixe
-  res.json({ used: 0, total: 100000 });
+  res.json({ used: 0, total: 250000 });
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v3 running on port ${PORT} — Gemini 2.0 Flash + OpenAI TTS`);
+  console.log(`AutoTube backend v4 running on port ${PORT} — Gemini 2.5 Flash + Unreal Speech`);
 });
