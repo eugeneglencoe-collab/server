@@ -17,7 +17,7 @@ app.use(express.json({ limit: '10mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '4.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech' });
+  res.json({ status: 'AutoTube backend running ✓', version: '5.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech + Stability AI' });
 });
 
 // ── GEMINI — Génération de script ────────────────────────
@@ -83,7 +83,6 @@ app.post('/generate-voice', async (req, res) => {
   const unrealKey = apiKey || process.env.UNREAL_SPEECH_API_KEY;
   if (!unrealKey) return res.status(400).json({ error: 'Clé Unreal Speech manquante' });
 
-  // Mapping des noms de voix → voix Unreal Speech
   const voiceMap = {
     'Neutre (Adam)':    'Scarlett',
     'Dynamique (Josh)': 'Dan',
@@ -114,7 +113,6 @@ app.post('/generate-voice', async (req, res) => {
     }
 
     const data = await response.json();
-    // Unreal Speech retourne une URL — on la renvoie au client
     res.json({ audioUrl: data.OutputUri });
 
   } catch (err) {
@@ -123,50 +121,48 @@ app.post('/generate-voice', async (req, res) => {
   }
 });
 
-// ── REPLICATE — Génération d'images ──────────────────────
+// ── STABILITY AI — Génération d'images ───────────────────
 app.post('/generate-image', async (req, res) => {
   const { prompt, apiKey } = req.body;
   if (!prompt) return res.status(400).json({ error: 'prompt manquant' });
 
-  const repKey = apiKey || process.env.REPLICATE_API_KEY;
-  if (!repKey) return res.status(400).json({ error: 'Clé Replicate manquante' });
+  const stabilityKey = apiKey || process.env.STABILITY_API_KEY;
+  if (!stabilityKey) return res.status(400).json({ error: 'Clé Stability AI manquante' });
 
   try {
-    const createRes = await fetch('https://api.replicate.com/v1/predictions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Token ${repKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        version: 'ac732df83cea7fff18b8472768c88ad041fa750ff7682a21affe81863cbe77e4',
-        input: {
-          prompt: `${prompt}, cinematic, high quality, 4k`,
-          width: 1280, height: 720,
+    const formData = new URLSearchParams();
+    formData.append('prompt', `${prompt}, cinematic, high quality, 4k`);
+    formData.append('output_format', 'jpeg');
+    formData.append('width', '1344');
+    formData.append('height', '768');
+    formData.append('steps', '30');
+
+    const response = await fetch(
+      'https://api.stability.ai/v2beta/stable-image/generate/core',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${stabilityKey}`,
+          'Accept': 'image/*',
         },
-      }),
-    });
+        body: formData,
+      }
+    );
 
-    const prediction = await createRes.json();
-    if (!createRes.ok) return res.status(createRes.status).json({ error: prediction.detail });
-
-    let result = prediction;
-    let tries = 0;
-    while (result.status !== 'succeeded' && result.status !== 'failed' && tries < 30) {
-      await new Promise(r => setTimeout(r, 2000));
-      const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${result.id}`, {
-        headers: { 'Authorization': `Token ${repKey}` },
-      });
-      result = await pollRes.json();
-      tries++;
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      return res.status(response.status).json({ error: err.message || err.errors?.[0] || response.status });
     }
 
-    if (result.status === 'failed') return res.status(500).json({ error: 'Replicate failed: ' + result.error });
-    if (result.status !== 'succeeded') return res.status(500).json({ error: 'Timeout Replicate' });
-    res.json({ url: result.output[0] });
+    // Convertir l'image en base64 pour la renvoyer
+    const buffer = await response.buffer();
+    const base64 = buffer.toString('base64');
+    const dataUrl = `data:image/jpeg;base64,${base64}`;
+
+    res.json({ url: dataUrl });
 
   } catch (err) {
-    console.error('Replicate error:', err);
+    console.error('Stability AI error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -177,5 +173,5 @@ app.get('/elevenlabs-quota', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v4 running on port ${PORT} — Gemini 2.5 Flash + Unreal Speech`);
+  console.log(`AutoTube backend v5 — Gemini 2.5 Flash + Unreal Speech + Stability AI`);
 });
