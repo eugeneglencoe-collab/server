@@ -131,7 +131,6 @@ app.post('/generate-image', async (req, res) => {
   if (!stabilityKey) return res.status(400).json({ error: 'Clé Stability AI manquante' });
 
   try {
-    // ✅ Vrai multipart/form-data avec le package form-data
     const formData = new FormData();
     formData.append('prompt', `${prompt}, cinematic, high quality, 4k`);
     formData.append('output_format', 'jpeg');
@@ -146,7 +145,7 @@ app.post('/generate-image', async (req, res) => {
         headers: {
           'Authorization': `Bearer ${stabilityKey}`,
           'Accept': 'image/*',
-          ...formData.getHeaders(), // ✅ injecte le bon Content-Type avec le boundary
+          ...formData.getHeaders(),
         },
         body: formData,
       }
