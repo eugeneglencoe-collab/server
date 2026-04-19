@@ -25,10 +25,10 @@ app.use(express.json({ limit: '50mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '6.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech + Stability AI' });
+  res.json({ status: 'AutoTube backend running ✓', version: '7.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech + Stability AI — Shorts optimisé' });
 });
 
-// ── GEMINI — Génération de script ────────────────────────
+// ── GEMINI — Génération de script SHORTS ─────────────────
 app.post('/generate-script', async (req, res) => {
   const { topic, tags, duration, apiKey } = req.body;
   if (!topic) return res.status(400).json({ error: 'topic manquant' });
@@ -36,20 +36,28 @@ app.post('/generate-script', async (req, res) => {
   const geminiKey = apiKey || process.env.GEMINI_API_KEY;
   if (!geminiKey) return res.status(400).json({ error: 'Clé Gemini manquante' });
 
-  const prompt = `Tu es un expert en création de contenu YouTube francophone.
+  const prompt = `Tu es un expert en création de contenu YouTube Shorts francophone.
 
-Génère un script complet pour une vidéo YouTube sur : "${topic}"
-Tags/Niche : ${(tags||[]).join(', ')}
-Durée cible : ${duration || '5-8 min'}
+Génère un script pour un YouTube SHORT viral sur : "${topic}"
+Niche / Tags : ${(tags||[]).join(', ')}
+
+RÈGLES ABSOLUES :
+- La narration doit faire EXACTEMENT 60 à 75 mots maximum (= 25-30 secondes de voix off)
+- Commence par une accroche choc dans les 3 premières secondes ("Tu savais que...", "Le secret de...", "Arrête tout...")
+- Ton dynamique, direct, percutant
+- Termine par un call-to-action court ("Abonne-toi", "Commente", "Partage")
+- Format vertical 9:16 pensé pour mobile
+- Génère UNIQUEMENT 4 prompts d'images (une par 7-8 secondes)
+- Les prompts d'images doivent être en anglais, style cinématique vertical
 
 Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte avant ou après :
 {
-  "title": "Titre accrocheur (max 60 chars)",
-  "description": "Description YouTube complète avec keywords (300-500 chars)",
-  "tags": ["tag1", "tag2", "tag3"],
-  "narration": "Script complet de narration à lire",
-  "imagePrompts": ["prompt image 1", "prompt image 2", "prompt image 3", "prompt image 4", "prompt image 5", "prompt image 6", "prompt image 7", "prompt image 8"],
-  "thumbnailPrompt": "Prompt pour la miniature YouTube ultra accrocheur"
+  "title": "Titre accrocheur avec #Shorts (max 60 chars)",
+  "description": "Description courte avec hashtags #Shorts #[niche] (max 200 chars)",
+  "tags": ["Shorts", "tag1", "tag2", "tag3"],
+  "narration": "Script de narration 60-75 mots maximum, accrocheur et dynamique",
+  "imagePrompts": ["vertical 9:16 cinematic prompt 1", "vertical 9:16 cinematic prompt 2", "vertical 9:16 cinematic prompt 3", "vertical 9:16 cinematic prompt 4"],
+  "thumbnailPrompt": "Vertical thumbnail prompt ultra eye-catching for YouTube Shorts"
 }`;
 
   try {
@@ -60,7 +68,7 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+          generationConfig: { temperature: 0.8, maxOutputTokens: 2048 },
         }),
       }
     );
@@ -71,6 +79,12 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const clean = text.replace(/```json|```/g, '').trim();
     const script = JSON.parse(clean);
+
+    // Forcer 4 images max pour les Shorts
+    if (script.imagePrompts && script.imagePrompts.length > 4) {
+      script.imagePrompts = script.imagePrompts.slice(0, 4);
+    }
+
     const usage = {
       input_tokens: data.usageMetadata?.promptTokenCount || 0,
       output_tokens: data.usageMetadata?.candidatesTokenCount || 0,
@@ -109,7 +123,7 @@ app.post('/generate-voice', async (req, res) => {
         Text: text,
         VoiceId: voice,
         Bitrate: '192k',
-        Speed: '0',
+        Speed: '0.1',   // Légèrement plus rapide pour les Shorts
         Pitch: '1',
         OutputFormat: 'uri',
       }),
@@ -129,7 +143,7 @@ app.post('/generate-voice', async (req, res) => {
   }
 });
 
-// ── STABILITY AI — Génération d'images ───────────────────
+// ── STABILITY AI — Génération d'images VERTICALES ────────
 app.post('/generate-image', async (req, res) => {
   const { prompt, apiKey } = req.body;
   if (!prompt) return res.status(400).json({ error: 'prompt manquant' });
@@ -140,7 +154,6 @@ app.post('/generate-image', async (req, res) => {
   const geminiKey = process.env.GEMINI_API_KEY;
 
   try {
-    // ── Traduction FR → EN via Gemini ────────────────────
     let englishPrompt = prompt;
     if (geminiKey) {
       const transResp = await fetch(
@@ -160,10 +173,11 @@ app.post('/generate-image', async (req, res) => {
     }
 
     const formData = new FormData();
-    formData.append('prompt', `${englishPrompt}, cinematic, high quality, 4k`);
+    formData.append('prompt', `${englishPrompt}, vertical 9:16, cinematic, high quality, 4k, mobile optimized`);
     formData.append('output_format', 'jpeg');
-    formData.append('width', '1344');
-    formData.append('height', '768');
+    // Format vertical 9:16 pour les Shorts
+    formData.append('width', '768');
+    formData.append('height', '1344');
     formData.append('steps', '30');
 
     const response = await fetch(
@@ -187,7 +201,6 @@ app.post('/generate-image', async (req, res) => {
     const buffer = await response.buffer();
     const base64 = buffer.toString('base64');
     const dataUrl = `data:image/jpeg;base64,${base64}`;
-
     res.json({ url: dataUrl });
 
   } catch (err) {
@@ -198,7 +211,7 @@ app.post('/generate-image', async (req, res) => {
 
 // ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE ────────────────────
 app.post('/assemble-and-publish', async (req, res) => {
-  const { images, audioUrl, script, tags, privacy, ytToken } = req.body;
+  const { images, audioUrl, script, tags, ytToken } = req.body;
   if (!images || !images.length) return res.status(400).json({ error: 'images manquantes' });
   if (!audioUrl) return res.status(400).json({ error: 'audioUrl manquant' });
   if (!ytToken)  return res.status(400).json({ error: 'token YouTube manquant' });
@@ -206,7 +219,7 @@ app.post('/assemble-and-publish', async (req, res) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotube-'));
 
   try {
-    // 1. Sauvegarder les images en fichiers JPEG
+    // 1. Sauvegarder les images
     const imagePaths = [];
     for (let i = 0; i < images.length; i++) {
       const base64 = images[i].replace(/^data:image\/\w+;base64,/, '');
@@ -221,17 +234,17 @@ app.post('/assemble-and-publish', async (req, res) => {
     const audioPath = path.join(tmpDir, 'audio.mp3');
     fs.writeFileSync(audioPath, audioBuffer);
 
-    // 3. Créer un fichier texte listant les images pour ffmpeg (concat)
-    const concatPath = path.join(tmpDir, 'concat.txt');
+    // 3. Durée audio → durée par image
     const audioDuration = await getAudioDuration(audioPath);
     const durationPerImage = audioDuration / imagePaths.length;
 
+    const concatPath = path.join(tmpDir, 'concat.txt');
     const concatContent = imagePaths.map(p =>
       `file '${p}'\nduration ${durationPerImage.toFixed(3)}`
     ).join('\n') + `\nfile '${imagePaths[imagePaths.length - 1]}'`;
     fs.writeFileSync(concatPath, concatContent);
 
-    // 4. Assembler avec ffmpeg
+    // 4. Assembler — format vertical 9:16 pour Shorts
     const videoPath = path.join(tmpDir, 'video.mp4');
     await new Promise((resolve, reject) => {
       ffmpeg()
@@ -244,7 +257,8 @@ app.post('/assemble-and-publish', async (req, res) => {
           '-pix_fmt yuv420p',
           '-shortest',
           '-movflags +faststart',
-          '-vf scale=1344:768:force_original_aspect_ratio=decrease,pad=1344:768:(ow-iw)/2:(oh-ih)/2',
+          // Format vertical 9:16 (1080x1920) pour Shorts
+          '-vf scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1',
         ])
         .output(videoPath)
         .on('end', resolve)
@@ -252,20 +266,19 @@ app.post('/assemble-and-publish', async (req, res) => {
         .run();
     });
 
-    // 5. Upload sur YouTube en multipart
+    // 5. Upload YouTube — PUBLIC pour les Shorts
     const videoBuffer = fs.readFileSync(videoPath);
     const metadata = {
       snippet: {
         title: script.title,
-        description: script.description,
-        tags: [...(script.tags || []), ...(tags || [])],
+        description: script.description + '\n\n#Shorts',
+        tags: ['Shorts', ...(script.tags || []), ...(tags || [])],
         categoryId: '22',
         defaultLanguage: 'fr',
       },
-      status: { privacyStatus: privacy || 'private' },
+      status: { privacyStatus: 'public' }, // ← PUBLIC
     };
 
-    // Upload en deux étapes : d'abord les métadonnées, puis le fichier
     const boundary = '-------314159265358979323846';
     const delimiter = `\r\n--${boundary}\r\n`;
     const closeDelimiter = `\r\n--${boundary}--`;
@@ -308,7 +321,6 @@ app.post('/assemble-and-publish', async (req, res) => {
     console.error('Assemble/publish error:', err);
     res.status(500).json({ error: err.message });
   } finally {
-    // Nettoyage des fichiers temporaires
     try { fs.rmSync(tmpDir, { recursive: true }); } catch(e) {}
   }
 });
@@ -318,7 +330,7 @@ function getAudioDuration(audioPath) {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(audioPath, (err, metadata) => {
       if (err) reject(err);
-      else resolve(metadata.format.duration || 60);
+      else resolve(metadata.format.duration || 30);
     });
   });
 }
@@ -329,5 +341,5 @@ app.get('/elevenlabs-quota', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v6 — Gemini + Unreal Speech + Stability AI + ffmpeg`);
+  console.log(`AutoTube backend v7 — Shorts optimisé (30s, vertical 9:16, public)`);
 });
