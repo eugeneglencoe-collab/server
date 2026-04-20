@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
-const FormData = require('form-data');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
 const fs = require('fs');
@@ -25,7 +24,7 @@ app.use(express.json({ limit: '50mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '7.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech + Stability AI — Shorts optimisé' });
+  res.json({ status: 'AutoTube backend running ✓', version: '8.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech + Pollinations AI' });
 });
 
 // ── GEMINI — Génération de script SHORTS ─────────────────
@@ -80,7 +79,6 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte
     const clean = text.replace(/```json|```/g, '').trim();
     const script = JSON.parse(clean);
 
-    // Forcer 4 images max pour les Shorts
     if (script.imagePrompts && script.imagePrompts.length > 4) {
       script.imagePrompts = script.imagePrompts.slice(0, 4);
     }
@@ -123,7 +121,7 @@ app.post('/generate-voice', async (req, res) => {
         Text: text,
         VoiceId: voice,
         Bitrate: '192k',
-        Speed: '0.1',   // Légèrement plus rapide pour les Shorts
+        Speed: '0.1',
         Pitch: '1',
         OutputFormat: 'uri',
       }),
@@ -143,68 +141,35 @@ app.post('/generate-voice', async (req, res) => {
   }
 });
 
-// ── STABILITY AI — Génération d'images VERTICALES ────────
+// ── POLLINATIONS AI — Génération d'images (100% gratuit) ─
 app.post('/generate-image', async (req, res) => {
-  const { prompt, apiKey } = req.body;
+  const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: 'prompt manquant' });
 
-  const stabilityKey = apiKey || process.env.STABILITY_API_KEY;
-  if (!stabilityKey) return res.status(400).json({ error: 'Clé Stability AI manquante' });
-
-  const geminiKey = process.env.GEMINI_API_KEY;
-
   try {
-    let englishPrompt = prompt;
-    if (geminiKey) {
-      const transResp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: `Translate this image generation prompt to English. Return ONLY the translated prompt, nothing else:\n\n${prompt}` }] }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 256 },
-          }),
-        }
-      );
-      const transData = await transResp.json();
-      const translated = transData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-      if (translated) englishPrompt = translated;
-    }
-
-    const formData = new FormData();
-    formData.append('prompt', `${englishPrompt}, vertical 9:16, cinematic, high quality, 4k, mobile optimized`);
-    formData.append('output_format', 'jpeg');
-    // Format vertical 9:16 pour les Shorts
-    formData.append('width', '768');
-    formData.append('height', '1344');
-    formData.append('steps', '30');
-
-    const response = await fetch(
-      'https://api.stability.ai/v2beta/stable-image/generate/core',
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${stabilityKey}`,
-          'Accept': 'image/*',
-          ...formData.getHeaders(),
-        },
-        body: formData,
-      }
+    // Encoder le prompt pour l'URL
+    const encodedPrompt = encodeURIComponent(
+      `${prompt}, vertical 9:16, cinematic, high quality, 4k, mobile optimized`
     );
 
+    // Pollinations AI — aucune clé requise, format vertical pour Shorts
+    const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=768&height=1344&nologo=true&enhance=true`;
+
+    // Télécharger l'image depuis Pollinations
+    const response = await fetch(url);
+
     if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      return res.status(response.status).json({ error: err.message || err.errors?.[0] || response.status });
+      return res.status(response.status).json({ error: `Pollinations error: ${response.status}` });
     }
 
     const buffer = await response.buffer();
     const base64 = buffer.toString('base64');
     const dataUrl = `data:image/jpeg;base64,${base64}`;
+
     res.json({ url: dataUrl });
 
   } catch (err) {
-    console.error('Stability AI error:', err);
+    console.error('Pollinations error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -257,7 +222,6 @@ app.post('/assemble-and-publish', async (req, res) => {
           '-pix_fmt yuv420p',
           '-shortest',
           '-movflags +faststart',
-          // Format vertical 9:16 (1080x1920) pour Shorts
           '-vf scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1',
         ])
         .output(videoPath)
@@ -266,7 +230,7 @@ app.post('/assemble-and-publish', async (req, res) => {
         .run();
     });
 
-    // 5. Upload YouTube — PUBLIC pour les Shorts
+    // 5. Upload YouTube PUBLIC
     const videoBuffer = fs.readFileSync(videoPath);
     const metadata = {
       snippet: {
@@ -276,10 +240,10 @@ app.post('/assemble-and-publish', async (req, res) => {
         categoryId: '22',
         defaultLanguage: 'fr',
       },
-      status: { 
-  privacyStatus: 'public',
-  madeForKids: false,  // ← ajouter cette ligne
-},
+      status: {
+        privacyStatus: 'public',
+        madeForKids: false,
+      },
     };
 
     const boundary = '-------314159265358979323846';
@@ -344,5 +308,5 @@ app.get('/elevenlabs-quota', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v7 — Shorts optimisé (30s, vertical 9:16, public)`);
+  console.log(`AutoTube backend v8 — Gemini + Unreal Speech + Pollinations AI (gratuit) + ffmpeg`);
 });
