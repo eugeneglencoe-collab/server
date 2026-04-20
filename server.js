@@ -276,7 +276,10 @@ app.post('/assemble-and-publish', async (req, res) => {
         categoryId: '22',
         defaultLanguage: 'fr',
       },
-      status: { privacyStatus: 'public' }, // ← PUBLIC
+      status: { 
+  privacyStatus: 'public',
+  madeForKids: false,  // ← ajouter cette ligne
+},
     };
 
     const boundary = '-------314159265358979323846';
