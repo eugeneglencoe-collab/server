@@ -136,29 +136,40 @@ app.post('/assemble-and-publish', async (req, res) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotube-'));
 
   try {
-    // 1. Télécharger les images depuis Pollinations
+    // 1. Télécharger les images
 console.log(`Téléchargement de ${imageUrls.length} images…`);
 const imagePaths = [];
 for (let i = 0; i < imageUrls.length; i++) {
   let imgBuffer = null;
-  let tries = 0;
-  while (!imgBuffer && tries < 3) {
+  
+  // Essai 1 : URL Pollinations originale
+  // Essai 2 : URL Pollinations alternative sans paramètres
+  // Essai 3 : Image placeholder neutre
+  const urlsToTry = [
+    imageUrls[i],
+    `https://image.pollinations.ai/prompt/${encodeURIComponent('cinematic vertical shot 9:16 high quality')}?width=768&height=1344&nologo=true&seed=${i}`,
+    `https://picsum.photos/768/1344?random=${i}`,
+  ];
+
+  for (const url of urlsToTry) {
     try {
-      console.log(`Image ${i+1} tentative ${tries+1}…`);
-      const imgResp = await fetch(imageUrls[i], { timeout: 60000 }); // 60s
+      console.log(`Image ${i+1} — essai : ${url.slice(0,60)}…`);
+      const imgResp = await fetch(url, { timeout: 90000 });
       if (!imgResp.ok) throw new Error(`Status ${imgResp.status}`);
       imgBuffer = await imgResp.buffer();
+      if (imgBuffer.length > 1000) break; // Image valide
     } catch(e) {
-      tries++;
-      console.log(`Image ${i+1} échec tentative ${tries}: ${e.message}`);
-      if (tries >= 3) throw new Error(`Image ${i+1} inaccessible après 3 tentatives`);
-      await new Promise(r => setTimeout(r, 3000));
+      console.log(`Échec : ${e.message}`);
+      await new Promise(r => setTimeout(r, 2000));
     }
   }
+
+  if (!imgBuffer) throw new Error(`Image ${i+1} impossible à télécharger`);
+  
   const imgPath = path.join(tmpDir, `img_${i}.jpg`);
   fs.writeFileSync(imgPath, imgBuffer);
   imagePaths.push(imgPath);
-  console.log(`Image ${i+1}/${imageUrls.length} téléchargée (${Math.round(imgBuffer.length/1024)}KB)`);
+  console.log(`Image ${i+1}/${imageUrls.length} ✓ (${Math.round(imgBuffer.length/1024)}KB)`);
 }
 
     // 2. Télécharger l'audio
