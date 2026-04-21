@@ -13,18 +13,14 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors({
-  origin: [
-    'https://eugeneglencoe-collab.github.io',
-    'http://localhost:3000',
-    'http://localhost:8080',
-  ]
+  origin: '*', // Autorise tout — évite les erreurs CORS même en cas de crash
 }));
 
-app.use(express.json({ limit: '10mb' })); // Réduit — plus de base64
+app.use(express.json({ limit: '10mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '8.0.0', ai: 'Gemini + Unreal Speech + Pollinations' });
+  res.json({ status: 'AutoTube backend running ✓', version: '9.0.0' });
 });
 
 // ── GEMINI — Génération de script SHORTS ─────────────────
@@ -131,7 +127,6 @@ app.post('/generate-voice', async (req, res) => {
 });
 
 // ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE ────────────────────
-// Accepte imageUrls (URLs Pollinations) au lieu de base64
 app.post('/assemble-and-publish', async (req, res) => {
   const { imageUrls, audioUrl, script, tags, ytToken } = req.body;
   if (!imageUrls || !imageUrls.length) return res.status(400).json({ error: 'imageUrls manquantes' });
@@ -145,26 +140,27 @@ app.post('/assemble-and-publish', async (req, res) => {
     console.log(`Téléchargement de ${imageUrls.length} images…`);
     const imagePaths = [];
     for (let i = 0; i < imageUrls.length; i++) {
-      const imgResp = await fetch(imageUrls[i]);
+      const imgResp = await fetch(imageUrls[i], { timeout: 30000 });
       if (!imgResp.ok) throw new Error(`Image ${i+1} inaccessible : ${imgResp.status}`);
       const imgBuffer = await imgResp.buffer();
       const imgPath = path.join(tmpDir, `img_${i}.jpg`);
       fs.writeFileSync(imgPath, imgBuffer);
       imagePaths.push(imgPath);
-      console.log(`Image ${i+1}/${imageUrls.length} téléchargée`);
+      console.log(`Image ${i+1}/${imageUrls.length} téléchargée (${Math.round(imgBuffer.length/1024)}KB)`);
     }
 
     // 2. Télécharger l'audio
     console.log('Téléchargement audio…');
-    const audioResp = await fetch(audioUrl);
+    const audioResp = await fetch(audioUrl, { timeout: 30000 });
     if (!audioResp.ok) throw new Error(`Audio inaccessible : ${audioResp.status}`);
     const audioBuffer = await audioResp.buffer();
     const audioPath = path.join(tmpDir, 'audio.mp3');
     fs.writeFileSync(audioPath, audioBuffer);
+    console.log(`Audio téléchargé (${Math.round(audioBuffer.length/1024)}KB)`);
 
     // 3. Durée audio → durée par image
     const audioDuration = await getAudioDuration(audioPath);
-    console.log(`Durée audio : ${audioDuration}s`);
+    console.log(`Durée audio : ${audioDuration.toFixed(1)}s`);
     const durationPerImage = audioDuration / imagePaths.length;
 
     const concatPath = path.join(tmpDir, 'concat.txt');
@@ -173,7 +169,7 @@ app.post('/assemble-and-publish', async (req, res) => {
     ).join('\n') + `\nfile '${imagePaths[imagePaths.length - 1]}'`;
     fs.writeFileSync(concatPath, concatContent);
 
-    // 4. Assembler ffmpeg — format vertical 9:16 pour Shorts
+    // 4. Assembler ffmpeg — optimisé pour 512MB RAM
     console.log('Assemblage ffmpeg…');
     const videoPath = path.join(tmpDir, 'video.mp4');
     await new Promise((resolve, reject) => {
@@ -183,17 +179,27 @@ app.post('/assemble-and-publish', async (req, res) => {
         .input(audioPath)
         .outputOptions([
           '-c:v libx264',
+          '-preset ultrafast',   // ← Moins de RAM, plus rapide
+          '-crf 28',             // ← Qualité légèrement réduite pour économiser RAM
           '-c:a aac',
+          '-b:a 128k',
           '-pix_fmt yuv420p',
           '-shortest',
           '-movflags +faststart',
-          '-vf scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1',
+          '-threads 1',          // ← 1 seul thread pour limiter la RAM
+          // Format vertical 720x1280 au lieu de 1080x1920 (4x moins de RAM)
+          '-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1',
         ])
         .output(videoPath)
-        .on('end', resolve)
-        .on('error', (err) => { console.error('ffmpeg error:', err); reject(err); })
+        .on('start', (cmd) => console.log('ffmpeg cmd:', cmd))
+        .on('progress', (p) => console.log('ffmpeg progress:', p.percent?.toFixed(0)+'%'))
+        .on('end', () => { console.log('ffmpeg terminé'); resolve(); })
+        .on('error', (err) => { console.error('ffmpeg error:', err.message); reject(err); })
         .run();
     });
+
+    const videoSize = fs.statSync(videoPath).size;
+    console.log(`Vidéo assemblée (${Math.round(videoSize/1024)}KB)`);
 
     // 5. Upload YouTube PUBLIC
     console.log('Upload YouTube…');
@@ -213,14 +219,11 @@ app.post('/assemble-and-publish', async (req, res) => {
     };
 
     const boundary = '-------314159265358979323846';
-    const delimiter = `\r\n--${boundary}\r\n`;
-    const closeDelimiter = `\r\n--${boundary}--`;
-
     const body = Buffer.concat([
-      Buffer.from(delimiter + 'Content-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata)),
-      Buffer.from(delimiter + 'Content-Type: video/mp4\r\n\r\n'),
+      Buffer.from(`\r\n--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` + JSON.stringify(metadata)),
+      Buffer.from(`\r\n--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`),
       videoBuffer,
-      Buffer.from(closeDelimiter),
+      Buffer.from(`\r\n--${boundary}--`),
     ]);
 
     const ytResp = await fetch(
@@ -242,11 +245,11 @@ app.post('/assemble-and-publish', async (req, res) => {
     }
 
     const ytData = await ytResp.json();
-    console.log('Publié :', ytData.id);
+    console.log('✓ Publié :', ytData.id);
     res.json({ success: true, youtubeId: ytData.id, title: script.title });
 
   } catch (err) {
-    console.error('Assemble/publish error:', err);
+    console.error('Assemble/publish error:', err.message);
     res.status(500).json({ error: err.message });
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true }); } catch(e) {}
@@ -269,5 +272,5 @@ app.get('/elevenlabs-quota', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v8 — Gemini + Unreal Speech + Pollinations + ffmpeg`);
+  console.log(`AutoTube backend v9 — optimisé 512MB RAM`);
 });
