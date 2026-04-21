@@ -146,6 +146,9 @@ app.post('/generate-image', async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: 'prompt manquant' });
 
+  // Pause pour éviter le rate limit Pollinations
+  await new Promise(r => setTimeout(r, 3000));
+
   try {
     // Encoder le prompt pour l'URL
     const encodedPrompt = encodeURIComponent(
