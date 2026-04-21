@@ -20,11 +20,11 @@ app.use(cors({
   ]
 }));
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '10mb' })); // Réduit — plus de base64
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '8.0.0', ai: 'Gemini 2.5 Flash + Unreal Speech + Pollinations AI' });
+  res.json({ status: 'AutoTube backend running ✓', version: '8.0.0', ai: 'Gemini + Unreal Speech + Pollinations' });
 });
 
 // ── GEMINI — Génération de script SHORTS ─────────────────
@@ -83,11 +83,7 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte
       script.imagePrompts = script.imagePrompts.slice(0, 4);
     }
 
-    const usage = {
-      input_tokens: data.usageMetadata?.promptTokenCount || 0,
-      output_tokens: data.usageMetadata?.candidatesTokenCount || 0,
-    };
-    res.json({ script, usage });
+    res.json({ script, usage: { input_tokens: data.usageMetadata?.promptTokenCount || 0, output_tokens: data.usageMetadata?.candidatesTokenCount || 0 } });
 
   } catch (err) {
     console.error('Gemini error:', err);
@@ -113,17 +109,10 @@ app.post('/generate-voice', async (req, res) => {
   try {
     const response = await fetch('https://api.v7.unrealspeech.com/speech', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${unrealKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Authorization': `Bearer ${unrealKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        Text: text,
-        VoiceId: voice,
-        Bitrate: '192k',
-        Speed: '0.1',
-        Pitch: '1',
-        OutputFormat: 'uri',
+        Text: text, VoiceId: voice, Bitrate: '192k',
+        Speed: '0.1', Pitch: '1', OutputFormat: 'uri',
       }),
     });
 
@@ -141,69 +130,41 @@ app.post('/generate-voice', async (req, res) => {
   }
 });
 
-// ── POLLINATIONS AI — Génération d'images (100% gratuit) ─
-app.post('/generate-image', async (req, res) => {
-  const { prompt } = req.body;
-  if (!prompt) return res.status(400).json({ error: 'prompt manquant' });
-
-  // Pause pour éviter le rate limit Pollinations
-  await new Promise(r => setTimeout(r, 3000));
-
-  try {
-    // Encoder le prompt pour l'URL
-    const encodedPrompt = encodeURIComponent(
-      `${prompt}, vertical 9:16, cinematic, high quality, 4k, mobile optimized`
-    );
-
-    // Pollinations AI — aucune clé requise, format vertical pour Shorts
-    const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=768&height=1344&nologo=true&enhance=true`;
-
-    // Télécharger l'image depuis Pollinations
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      return res.status(response.status).json({ error: `Pollinations error: ${response.status}` });
-    }
-
-    const buffer = await response.buffer();
-    const base64 = buffer.toString('base64');
-    const dataUrl = `data:image/jpeg;base64,${base64}`;
-
-    res.json({ url: dataUrl });
-
-  } catch (err) {
-    console.error('Pollinations error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE ────────────────────
+// Accepte imageUrls (URLs Pollinations) au lieu de base64
 app.post('/assemble-and-publish', async (req, res) => {
-  const { images, audioUrl, script, tags, ytToken } = req.body;
-  if (!images || !images.length) return res.status(400).json({ error: 'images manquantes' });
+  const { imageUrls, audioUrl, script, tags, ytToken } = req.body;
+  if (!imageUrls || !imageUrls.length) return res.status(400).json({ error: 'imageUrls manquantes' });
   if (!audioUrl) return res.status(400).json({ error: 'audioUrl manquant' });
   if (!ytToken)  return res.status(400).json({ error: 'token YouTube manquant' });
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotube-'));
 
   try {
-    // 1. Sauvegarder les images
+    // 1. Télécharger les images depuis Pollinations
+    console.log(`Téléchargement de ${imageUrls.length} images…`);
     const imagePaths = [];
-    for (let i = 0; i < images.length; i++) {
-      const base64 = images[i].replace(/^data:image\/\w+;base64,/, '');
+    for (let i = 0; i < imageUrls.length; i++) {
+      const imgResp = await fetch(imageUrls[i]);
+      if (!imgResp.ok) throw new Error(`Image ${i+1} inaccessible : ${imgResp.status}`);
+      const imgBuffer = await imgResp.buffer();
       const imgPath = path.join(tmpDir, `img_${i}.jpg`);
-      fs.writeFileSync(imgPath, Buffer.from(base64, 'base64'));
+      fs.writeFileSync(imgPath, imgBuffer);
       imagePaths.push(imgPath);
+      console.log(`Image ${i+1}/${imageUrls.length} téléchargée`);
     }
 
     // 2. Télécharger l'audio
+    console.log('Téléchargement audio…');
     const audioResp = await fetch(audioUrl);
+    if (!audioResp.ok) throw new Error(`Audio inaccessible : ${audioResp.status}`);
     const audioBuffer = await audioResp.buffer();
     const audioPath = path.join(tmpDir, 'audio.mp3');
     fs.writeFileSync(audioPath, audioBuffer);
 
     // 3. Durée audio → durée par image
     const audioDuration = await getAudioDuration(audioPath);
+    console.log(`Durée audio : ${audioDuration}s`);
     const durationPerImage = audioDuration / imagePaths.length;
 
     const concatPath = path.join(tmpDir, 'concat.txt');
@@ -212,7 +173,8 @@ app.post('/assemble-and-publish', async (req, res) => {
     ).join('\n') + `\nfile '${imagePaths[imagePaths.length - 1]}'`;
     fs.writeFileSync(concatPath, concatContent);
 
-    // 4. Assembler — format vertical 9:16 pour Shorts
+    // 4. Assembler ffmpeg — format vertical 9:16 pour Shorts
+    console.log('Assemblage ffmpeg…');
     const videoPath = path.join(tmpDir, 'video.mp4');
     await new Promise((resolve, reject) => {
       ffmpeg()
@@ -229,16 +191,17 @@ app.post('/assemble-and-publish', async (req, res) => {
         ])
         .output(videoPath)
         .on('end', resolve)
-        .on('error', reject)
+        .on('error', (err) => { console.error('ffmpeg error:', err); reject(err); })
         .run();
     });
 
     // 5. Upload YouTube PUBLIC
+    console.log('Upload YouTube…');
     const videoBuffer = fs.readFileSync(videoPath);
     const metadata = {
       snippet: {
         title: script.title,
-        description: script.description + '\n\n#Shorts',
+        description: (script.description || '') + '\n\n#Shorts',
         tags: ['Shorts', ...(script.tags || []), ...(tags || [])],
         categoryId: '22',
         defaultLanguage: 'fr',
@@ -253,15 +216,9 @@ app.post('/assemble-and-publish', async (req, res) => {
     const delimiter = `\r\n--${boundary}\r\n`;
     const closeDelimiter = `\r\n--${boundary}--`;
 
-    const metaPart = delimiter +
-      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-      JSON.stringify(metadata);
-    const videoPart = delimiter +
-      'Content-Type: video/mp4\r\n\r\n';
-
     const body = Buffer.concat([
-      Buffer.from(metaPart),
-      Buffer.from(videoPart),
+      Buffer.from(delimiter + 'Content-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata)),
+      Buffer.from(delimiter + 'Content-Type: video/mp4\r\n\r\n'),
       videoBuffer,
       Buffer.from(closeDelimiter),
     ]);
@@ -285,6 +242,7 @@ app.post('/assemble-and-publish', async (req, res) => {
     }
 
     const ytData = await ytResp.json();
+    console.log('Publié :', ytData.id);
     res.json({ success: true, youtubeId: ytData.id, title: script.title });
 
   } catch (err) {
@@ -305,11 +263,11 @@ function getAudioDuration(audioPath) {
   });
 }
 
-// ── QUOTA VOIX ───────────────────────────────────────────
+// ── QUOTA ────────────────────────────────────────────────
 app.get('/elevenlabs-quota', async (req, res) => {
   res.json({ used: 0, total: 250000 });
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v8 — Gemini + Unreal Speech + Pollinations AI (gratuit) + ffmpeg`);
+  console.log(`AutoTube backend v8 — Gemini + Unreal Speech + Pollinations + ffmpeg`);
 });
