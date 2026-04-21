@@ -137,17 +137,29 @@ app.post('/assemble-and-publish', async (req, res) => {
 
   try {
     // 1. Télécharger les images depuis Pollinations
-    console.log(`Téléchargement de ${imageUrls.length} images…`);
-    const imagePaths = [];
-    for (let i = 0; i < imageUrls.length; i++) {
-      const imgResp = await fetch(imageUrls[i], { timeout: 30000 });
-      if (!imgResp.ok) throw new Error(`Image ${i+1} inaccessible : ${imgResp.status}`);
-      const imgBuffer = await imgResp.buffer();
-      const imgPath = path.join(tmpDir, `img_${i}.jpg`);
-      fs.writeFileSync(imgPath, imgBuffer);
-      imagePaths.push(imgPath);
-      console.log(`Image ${i+1}/${imageUrls.length} téléchargée (${Math.round(imgBuffer.length/1024)}KB)`);
+console.log(`Téléchargement de ${imageUrls.length} images…`);
+const imagePaths = [];
+for (let i = 0; i < imageUrls.length; i++) {
+  let imgBuffer = null;
+  let tries = 0;
+  while (!imgBuffer && tries < 3) {
+    try {
+      console.log(`Image ${i+1} tentative ${tries+1}…`);
+      const imgResp = await fetch(imageUrls[i], { timeout: 60000 }); // 60s
+      if (!imgResp.ok) throw new Error(`Status ${imgResp.status}`);
+      imgBuffer = await imgResp.buffer();
+    } catch(e) {
+      tries++;
+      console.log(`Image ${i+1} échec tentative ${tries}: ${e.message}`);
+      if (tries >= 3) throw new Error(`Image ${i+1} inaccessible après 3 tentatives`);
+      await new Promise(r => setTimeout(r, 3000));
     }
+  }
+  const imgPath = path.join(tmpDir, `img_${i}.jpg`);
+  fs.writeFileSync(imgPath, imgBuffer);
+  imagePaths.push(imgPath);
+  console.log(`Image ${i+1}/${imageUrls.length} téléchargée (${Math.round(imgBuffer.length/1024)}KB)`);
+}
 
     // 2. Télécharger l'audio
     console.log('Téléchargement audio…');
