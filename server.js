@@ -43,7 +43,7 @@ RÈGLES ABSOLUES :
 - Termine par un call-to-action court ("Abonne-toi", "Commente", "Partage")
 - Format vertical 9:16 pensé pour mobile
 - Génère UNIQUEMENT 4 prompts d'images (une par 7-8 secondes)
-- Les prompts d'images doivent être en anglais, style cinématique vertical
+- Les prompts d'images doivent être en français, style cinématique vertical
 
 Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte avant ou après :
 {
