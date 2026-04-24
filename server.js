@@ -381,8 +381,25 @@ app.post('/agent-run', async (req, res) => {
     }
 
     // PHASE 6 — Analyse Claude Vision (avec ou sans image)
-    log.push('Phase 6 : analyse Claude Vision…');
-    const claudeContent = [];
+    const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
+  method: 'POST',
+  headers: {
+    'x-api-key': CLAUDE,
+    'anthropic-version': '2023-06-01',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: claudeContent }],
+  }),
+});
+
+const claudeData = await claudeResp.json();
+console.log('CLAUDE RESPONSE STATUS:', claudeResp.status);
+console.log('CLAUDE RESPONSE:', JSON.stringify(claudeData).slice(0, 300));
+
+if (!claudeResp.ok) throw new Error(claudeData.error?.message || 'Erreur Claude API');
 
     if (frameBase64) {
       claudeContent.push({
