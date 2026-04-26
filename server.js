@@ -12,10 +12,7 @@ ffmpeg.setFfmpegPath(ffmpegStatic);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({
-  origin: '*',
-}));
-
+app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
@@ -43,7 +40,7 @@ RÈGLES ABSOLUES :
 - Termine par un call-to-action court ("Abonne-toi", "Commente", "Partage")
 - Format vertical 9:16 pensé pour mobile
 - Génère UNIQUEMENT 4 prompts d'images (une par 7-8 secondes)
-- Les prompts d'images doivent être en français, style cinématique vertical
+- Les prompts d'images doivent être en anglais, style cinématique vertical
 
 Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte avant ou après :
 {
@@ -79,7 +76,13 @@ Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte
       script.imagePrompts = script.imagePrompts.slice(0, 4);
     }
 
-    res.json({ script, usage: { input_tokens: data.usageMetadata?.promptTokenCount || 0, output_tokens: data.usageMetadata?.candidatesTokenCount || 0 } });
+    res.json({
+      script,
+      usage: {
+        input_tokens: data.usageMetadata?.promptTokenCount || 0,
+        output_tokens: data.usageMetadata?.candidatesTokenCount || 0,
+      },
+    });
 
   } catch (err) {
     console.error('Gemini error:', err);
@@ -136,9 +139,10 @@ app.post('/assemble-and-publish', async (req, res) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotube-'));
 
   try {
-    // 1. Télécharger les images
+    // 1. Télécharger les images avec fallback
     console.log(`Téléchargement de ${imageUrls.length} images…`);
     const imagePaths = [];
+
     for (let i = 0; i < imageUrls.length; i++) {
       let imgBuffer = null;
 
@@ -150,12 +154,12 @@ app.post('/assemble-and-publish', async (req, res) => {
 
       for (const url of urlsToTry) {
         try {
-          console.log(`Image ${i+1} — essai : ${url.slice(0,60)}…`);
+          console.log(`Image ${i+1} — essai : ${url.slice(0, 60)}…`);
           const imgResp = await fetch(url, { timeout: 90000 });
           if (!imgResp.ok) throw new Error(`Status ${imgResp.status}`);
           imgBuffer = await imgResp.buffer();
           if (imgBuffer.length > 1000) break;
-        } catch(e) {
+        } catch (e) {
           console.log(`Échec : ${e.message}`);
           await new Promise(r => setTimeout(r, 2000));
         }
@@ -189,7 +193,7 @@ app.post('/assemble-and-publish', async (req, res) => {
     ).join('\n') + `\nfile '${imagePaths[imagePaths.length - 1]}'`;
     fs.writeFileSync(concatPath, concatContent);
 
-    // 4. Assembler ffmpeg
+    // 4. Assembler ffmpeg — optimisé 512MB RAM
     console.log('Assemblage ffmpeg…');
     const videoPath = path.join(tmpDir, 'video.mp4');
     await new Promise((resolve, reject) => {
@@ -210,8 +214,8 @@ app.post('/assemble-and-publish', async (req, res) => {
           '-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1',
         ])
         .output(videoPath)
-        .on('start', (cmd) => console.log('ffmpeg cmd:', cmd))
-        .on('progress', (p) => console.log('ffmpeg progress:', p.percent?.toFixed(0)+'%'))
+        .on('start', (cmd) => console.log('ffmpeg start'))
+        .on('progress', (p) => console.log('ffmpeg:', p.percent?.toFixed(0) + '%'))
         .on('end', () => { console.log('ffmpeg terminé'); resolve(); })
         .on('error', (err) => { console.error('ffmpeg error:', err.message); reject(err); })
         .run();
@@ -285,25 +289,15 @@ function getAudioDuration(audioPath) {
   });
 }
 
-// ── QUOTA ────────────────────────────────────────────────
-app.get('/elevenlabs-quota', async (req, res) => {
-  res.json({ used: 0, total: 250000 });
-});
-
-// ═══════════════════════════════════════════════════════════
-// ── AGENT IA — AUTO-AMÉLIORATION ──────────────────────────
-// ═══════════════════════════════════════════════════════════
-
-// Stockage en mémoire des itérations (persiste tant que Render tourne)
+// ── AGENT IA — Cycle complet d'amélioration ──────────────
 const agentHistory = [];
 
-// ── AGENT — Cycle complet d'amélioration ──────────────────
 app.post('/agent-run', async (req, res) => {
   const { topic, tags, geminiKey, unrealKey, anthropicKey } = req.body;
 
-  const GEMINI  = geminiKey    || process.env.GEMINI_API_KEY;
-  const UNREAL  = unrealKey    || process.env.UNREAL_SPEECH_API_KEY;
-  const CLAUDE  = anthropicKey || process.env.ANTHROPIC_API_KEY;
+  const GEMINI = geminiKey    || process.env.GEMINI_API_KEY;
+  const UNREAL = unrealKey    || process.env.UNREAL_SPEECH_API_KEY;
+  const CLAUDE = anthropicKey || process.env.ANTHROPIC_API_KEY;
 
   if (!GEMINI || !UNREAL || !CLAUDE)
     return res.status(400).json({ error: 'Clés API manquantes (Gemini, Unreal Speech, Anthropic)' });
@@ -312,7 +306,7 @@ app.post('/agent-run', async (req, res) => {
   const log = [];
 
   try {
-    // PHASE 1 — Récupère le meilleur prompt connu (ou utilise le défaut)
+    // Phase 1 — Meilleur prompt connu
     const lastGood = agentHistory
       .filter(h => h.score >= 7)
       .sort((a, b) => b.score - a.score)[0];
@@ -321,10 +315,10 @@ app.post('/agent-run', async (req, res) => {
       ? `Améliore ce prompt qui a obtenu ${lastGood.score}/10 : ${lastGood.narrationPrompt}`
       : null;
 
-    log.push('Phase 1 : récupération du meilleur prompt connu ✓');
+    log.push('Phase 1 : récupération du meilleur prompt ✓');
 
-    // PHASE 2 — Génère le script via Gemini
-    log.push('Phase 2 : génération du script via Gemini…');
+    // Phase 2 — Script via Gemini
+    log.push('Phase 2 : génération du script…');
     const scriptResp = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI}`,
       {
@@ -340,9 +334,10 @@ app.post('/agent-run', async (req, res) => {
     if (!scriptResp.ok) throw new Error(scriptData.error?.message || 'Erreur Gemini');
     const scriptText = scriptData.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const script = JSON.parse(scriptText.replace(/```json|```/g, '').trim());
+    if (script.imagePrompts && script.imagePrompts.length > 4) script.imagePrompts = script.imagePrompts.slice(0, 4);
     log.push('Phase 2 : script généré ✓');
 
-    // PHASE 3 — Génère la voix via Unreal Speech
+    // Phase 3 — Voix via Unreal Speech
     log.push('Phase 3 : génération de la voix…');
     const voiceResp = await fetch('https://api.v7.unrealspeech.com/speech', {
       method: 'POST',
@@ -357,14 +352,14 @@ app.post('/agent-run', async (req, res) => {
     const audioUrl = voiceData.OutputUri;
     log.push('Phase 3 : voix générée ✓');
 
-    // PHASE 4 — Génère les URLs d'images via Pollinations
-    log.push('Phase 4 : génération des images…');
+    // Phase 4 — URLs images Pollinations
+    log.push('Phase 4 : génération des URLs images…');
     const imageUrls = script.imagePrompts.map((p, i) =>
       `https://image.pollinations.ai/prompt/${encodeURIComponent(p)}?width=768&height=1344&nologo=true&seed=${iterationId + i}`
     );
     log.push('Phase 4 : URLs images générées ✓');
 
-    // PHASE 5 — Télécharge la première image pour analyse visuelle
+    // Phase 5 — Télécharge la première image pour analyse
     log.push('Phase 5 : téléchargement de la frame pour analyse…');
     let frameBase64 = null;
     try {
@@ -380,26 +375,9 @@ app.post('/agent-run', async (req, res) => {
       log.push(`Phase 5 : erreur frame (${e.message}), analyse texte seule`);
     }
 
-    // PHASE 6 — Analyse Claude Vision (avec ou sans image)
-    const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
-  method: 'POST',
-  headers: {
-    'x-api-key': CLAUDE,
-    'anthropic-version': '2023-06-01',
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: claudeContent }],
-  }),
-});
-
-const claudeData = await claudeResp.json();
-console.log('CLAUDE RESPONSE STATUS:', claudeResp.status);
-console.log('CLAUDE RESPONSE:', JSON.stringify(claudeData).slice(0, 300));
-
-if (!claudeResp.ok) throw new Error(claudeData.error?.message || 'Erreur Claude API');
+    // Phase 6 — Analyse Claude
+    log.push('Phase 6 : analyse qualité via Claude…');
+    const claudeContent = [];
 
     if (frameBase64) {
       claudeContent.push({
@@ -416,7 +394,7 @@ Script : "${script.narration}"
 Titre : "${script.title}"
 Prompts images : ${script.imagePrompts.join(' | ')}
 
-Note sur 10 selon ces critères YouTube Shorts.
+Note sur 10 selon les critères YouTube Shorts.
 Réponds UNIQUEMENT en JSON valide :
 {
   "score": 7,
@@ -441,7 +419,7 @@ Réponds UNIQUEMENT en JSON valide :
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 1024,
         messages: [{ role: 'user', content: claudeContent }],
       }),
@@ -449,32 +427,27 @@ Réponds UNIQUEMENT en JSON valide :
 
     const claudeData = await claudeResp.json();
     if (!claudeResp.ok) throw new Error(claudeData.error?.message || 'Erreur Claude API');
+
     const analysisText = claudeData.content?.[0]?.text || '{}';
     const analysis = JSON.parse(analysisText.replace(/```json|```/g, '').trim());
     log.push(`Phase 6 : analyse terminée — score ${analysis.score}/10 ✓`);
 
-    // PHASE 7 — Sauvegarde dans l'historique
+    // Phase 7 — Sauvegarde
     const iteration = {
       id: iterationId,
       date: new Date().toISOString(),
-      topic,
-      tags,
-      script,
-      audioUrl,
-      imageUrls,
-      analysis,
+      topic, tags, script, audioUrl, imageUrls, analysis,
       score: analysis.score,
       narrationPrompt: script.narration,
       log,
-      status: 'pending', // 'pending' | 'validated' | 'rejected'
+      status: 'pending',
     };
 
     agentHistory.unshift(iteration);
-    if (agentHistory.length > 20) agentHistory.pop(); // garde les 20 dernières
-
+    if (agentHistory.length > 20) agentHistory.pop();
     log.push('Phase 7 : itération sauvegardée ✓');
-    console.log(`Agent cycle terminé — itération ${iterationId} — score ${analysis.score}/10`);
 
+    console.log(`Agent cycle terminé — score ${analysis.score}/10`);
     res.json({ success: true, iteration });
 
   } catch (err) {
@@ -483,22 +456,21 @@ Réponds UNIQUEMENT en JSON valide :
   }
 });
 
-// ── AGENT — Historique des itérations ────────────────────
+// ── AGENT — Historique ────────────────────────────────────
 app.get('/agent-history', (req, res) => {
   res.json({ iterations: agentHistory, total: agentHistory.length });
 });
 
-// ── AGENT — Valider ou rejeter une itération ──────────────
+// ── AGENT — Valider/Rejeter ───────────────────────────────
 app.post('/agent-validate', (req, res) => {
-  const { id, action } = req.body; // action: 'validate' | 'reject'
+  const { id, action } = req.body;
   const iter = agentHistory.find(h => h.id === id);
   if (!iter) return res.status(404).json({ error: 'Itération non trouvée' });
   iter.status = action === 'validate' ? 'validated' : 'rejected';
-  console.log(`Itération ${id} → ${iter.status}`);
   res.json({ success: true, iteration: iter });
 });
 
-// ── UTILITAIRE — Construit le prompt agent amélioré ───────
+// ── UTILITAIRE — Prompt agent ─────────────────────────────
 function buildAgentPrompt(topic, tags, basePrompt) {
   const amelioration = basePrompt
     ? `\nUTILISE ce prompt de base et améliore-le : "${basePrompt}"\n`
@@ -508,19 +480,17 @@ function buildAgentPrompt(topic, tags, basePrompt) {
 Génère un script optimisé pour YouTube Shorts sur : "${topic}"
 Tags : ${(tags || []).join(', ')}
 
-RÈGLES ABSOLUES YouTube Shorts :
-- Narration 60-75 mots MAX (25-30 secondes de voix off)
+RÈGLES ABSOLUES :
+- Narration 60-75 mots MAX (25-30 secondes)
 - Accroche percutante dans les 3 premières secondes
 - Ton ultra dynamique, direct, engageant
-- Call-to-action court en fin ("Abonne-toi", "Commente", "Partage")
-- 4 prompts images verticaux 9:16, style cinématique ultra qualitatif
-- Première image = impact maximum (effet thumbnail)
-- Optimisé pour les standards YouTube Shorts 2024
+- Call-to-action court en fin
+- 4 prompts images verticaux 9:16, style cinématique
 
 Réponds UNIQUEMENT en JSON valide :
 {
   "title": "Titre accrocheur #Shorts (max 60 chars)",
-  "description": "Description avec hashtags #Shorts #tag (max 200 chars)",
+  "description": "Description avec hashtags #Shorts (max 200 chars)",
   "tags": ["Shorts", "tag1", "tag2", "tag3"],
   "narration": "Script 60-75 mots, accroche + corps + CTA",
   "imagePrompts": ["prompt1 9:16 cinematic vertical", "prompt2", "prompt3", "prompt4"],
@@ -528,7 +498,10 @@ Réponds UNIQUEMENT en JSON valide :
 }`;
 }
 
-// ═══════════════════════════════════════════════════════════
+// ── QUOTA ────────────────────────────────────────────────
+app.get('/elevenlabs-quota', async (req, res) => {
+  res.json({ used: 0, total: 250000 });
+});
 
 app.listen(PORT, () => {
   console.log(`AutoTube backend v10 — Agent IA activé — port ${PORT}`);
