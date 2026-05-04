@@ -28,28 +28,35 @@ app.post('/generate-script', async (req, res) => {
   const geminiKey = apiKey || process.env.GEMINI_API_KEY;
   if (!geminiKey) return res.status(400).json({ error: 'Clé Gemini manquante' });
 
-  const prompt = `Tu es un expert en création de contenu YouTube Shorts francophone.
-
-Génère un script pour un YouTube SHORT viral sur : "${topic}"
+  const prompt = `Tu es un expert en création de contenu YouTube Shorts francophone viral.
+Génère un script pour un YouTube Short sur : "${topic}"
 Niche / Tags : ${(tags||[]).join(', ')}
 
 RÈGLES ABSOLUES :
-- La narration doit faire EXACTEMENT 60 à 75 mots maximum (= 25-30 secondes de voix off)
-- Commence par une accroche choc dans les 3 premières secondes ("Tu savais que...", "Le secret de...", "Arrête tout...")
-- Ton dynamique, direct, percutant
-- Termine par un call-to-action court ("Abonne-toi", "Commente", "Partage")
-- Format vertical 9:16 pensé pour mobile
-- Génère UNIQUEMENT 4 prompts d'images (une par 7-8 secondes)
-- Les prompts d'images doivent être en anglais, style cinématique vertical
+- La narration doit faire EXACTEMENT 40 à 50 mots (= 15-18 secondes de voix off)
+- Structurée en 4 blocs de 10-12 mots chacun, un bloc par image
+- Bloc 1 : accroche choc obligatoire ("Tu savais que...", "C'est interdit de...", "Personne ne parle de...")
+- Bloc 2 : développement surprenant
+- Bloc 3 : fait clé ou twist inattendu
+- Bloc 4 : phrase de chute mémorable, max 8 mots, pas de CTA générique
+- Ton direct, rythmé, chaque phrase doit donner envie d'entendre la suivante
+- JAMAIS de "Abonne-toi" ou "Commente" dans la narration
 
-Réponds UNIQUEMENT en JSON valide avec cette structure exacte, sans aucun texte avant ou après :
+IMAGES :
+- 4 prompts en anglais, style identique sur les 4 pour cohérence visuelle
+- Format vertical 9:16, ultra-réaliste ou illustratif selon le sujet
+- Chaque prompt commence par "Vertical 9:16, [style défini], " puis la scène précise
+- Le style doit être défini une fois et répété : ex. "dramatic cinematic photography" ou "vintage editorial illustration"
+- Scène précise, pas abstraite : un lieu, un personnage, une action, une lumière
+
+Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
 {
-  "title": "Titre accrocheur avec #Shorts (max 60 chars)",
-  "description": "Description courte avec hashtags #Shorts #[niche] (max 200 chars)",
+  "title": "Titre 40 chars max, sans hashtag",
+  "description": "2 phrases max + hashtags #Shorts #[niche]",
   "tags": ["Shorts", "tag1", "tag2", "tag3"],
-  "narration": "Script de narration 60-75 mots maximum, accrocheur et dynamique",
-  "imagePrompts": ["vertical 9:16 cinematic prompt 1", "vertical 9:16 cinematic prompt 2", "vertical 9:16 cinematic prompt 3", "vertical 9:16 cinematic prompt 4"],
-  "thumbnailPrompt": "Vertical thumbnail prompt ultra eye-catching for YouTube Shorts"
+  "narration": "40-50 mots, 4 blocs séparés par | pour synchronisation",
+  "imagePrompts": ["prompt 1", "prompt 2", "prompt 3", "prompt 4"],
+  "thumbnailPrompt": "Vertical 9:16, même style que les images, scène la plus impactante du sujet, texte overlay suggestion"
 }`;
 
   try {
