@@ -17,7 +17,7 @@ app.use(express.json({ limit: '10mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '10.0.0' });
+  res.json({ status: 'AutoTube backend running ✓', version: '11.0.0' });
 });
 
 // ── GEMINI — Génération de script SHORTS ─────────────────
@@ -136,7 +136,7 @@ app.post('/generate-voice', async (req, res) => {
   }
 });
 
-// ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE ────────────────────
+// ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE — v2 (Ken Burns + Sous-titres) ─────────
 app.post('/assemble-and-publish', async (req, res) => {
   const { imageUrls, audioUrl, script, tags, ytToken } = req.body;
   if (!imageUrls || !imageUrls.length) return res.status(400).json({ error: 'imageUrls manquantes' });
@@ -194,19 +194,120 @@ app.post('/assemble-and-publish', async (req, res) => {
     console.log(`Durée audio : ${audioDuration.toFixed(1)}s`);
     const durationPerImage = audioDuration / imagePaths.length;
 
-    const concatPath = path.join(tmpDir, 'concat.txt');
-    const concatContent = imagePaths.map(p =>
-      `file '${p}'\nduration ${durationPerImage.toFixed(3)}`
-    ).join('\n') + `\nfile '${imagePaths[imagePaths.length - 1]}'`;
-    fs.writeFileSync(concatPath, concatContent);
+    // 4. Générer les clips individuels avec effet Ken Burns
+    console.log('Génération Ken Burns par image…');
+    const clipPaths = [];
+    const fps = 24;
 
-    // 4. Assembler ffmpeg — optimisé 512MB RAM
-    console.log('Assemblage ffmpeg…');
-    const videoPath = path.join(tmpDir, 'video.mp4');
+    // Directions Ken Burns alternées pour éviter la monotonie
+    const kenBurnsEffects = [
+      // Zoom avant centré
+      (frames) => `zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=720x1280:fps=${fps}`,
+      // Panoramique gauche → droite + léger zoom
+      (frames) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,x+1)':y='ih/2-(ih/zoom/2)':d=${frames}:s=720x1280:fps=${fps}`,
+      // Zoom arrière depuis le haut
+      (frames) => `zoompan=z='if(lte(zoom,1.0),1.3,max(zoom-0.0015,1.0))':x='iw/2-(iw/zoom/2)':y='0':d=${frames}:s=720x1280:fps=${fps}`,
+      // Panoramique droite → gauche
+      (frames) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,max(x-1,0))':y='ih/2-(ih/zoom/2)':d=${frames}:s=720x1280:fps=${fps}`,
+    ];
+
+    for (let i = 0; i < imagePaths.length; i++) {
+      const clipPath = path.join(tmpDir, `clip_${i}.mp4`);
+      const frames = Math.ceil(durationPerImage * fps);
+      const zoomFilter = kenBurnsEffects[i % kenBurnsEffects.length](frames);
+
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(imagePaths[i])
+          .inputOptions(['-loop 1'])
+          .outputOptions([
+            `-t ${durationPerImage.toFixed(3)}`,
+            '-c:v libx264',
+            '-preset ultrafast',
+            '-crf 26',
+            '-pix_fmt yuv420p',
+            `-r ${fps}`,
+            `-vf ${zoomFilter},setsar=1`,
+            '-threads 1',
+            '-an',
+          ])
+          .output(clipPath)
+          .on('end', resolve)
+          .on('error', reject)
+          .run();
+      });
+      clipPaths.push(clipPath);
+      console.log(`Clip ${i+1}/${imagePaths.length} Ken Burns ✓`);
+    }
+
+    // 5. Concaténer les clips Ken Burns
+    console.log('Concaténation des clips…');
+    const concatPath = path.join(tmpDir, 'concat.txt');
+    fs.writeFileSync(concatPath, clipPaths.map(p => `file '${p}'`).join('\n'));
+    const concatVideoPath = path.join(tmpDir, 'concat_video.mp4');
+
     await new Promise((resolve, reject) => {
       ffmpeg()
         .input(concatPath)
         .inputOptions(['-f concat', '-safe 0'])
+        .outputOptions([
+          '-c:v libx264',
+          '-preset ultrafast',
+          '-crf 26',
+          '-pix_fmt yuv420p',
+          '-an',
+          '-threads 1',
+        ])
+        .output(concatVideoPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    // 6. Générer le fichier SRT de sous-titres
+    // La narration est séparée par "|" (ex: "Bloc 1 | Bloc 2 | Bloc 3 | Bloc 4")
+    console.log('Génération des sous-titres…');
+    const srtPath = path.join(tmpDir, 'subtitles.srt');
+    const narration = script.narration || '';
+    const blocks = narration.split('|').map(b => b.trim()).filter(Boolean);
+
+    // Fallback : découper en 4 parts égales si pas de séparateur |
+    const subtitleBlocks = blocks.length >= 2 ? blocks : splitIntoChunks(narration, imagePaths.length);
+
+    let srtContent = '';
+    let currentTime = 0;
+    subtitleBlocks.forEach((block, i) => {
+      const startTime = formatSRTTime(currentTime);
+      const endTime = formatSRTTime(currentTime + durationPerImage - 0.1);
+      srtContent += `${i + 1}\n${startTime} --> ${endTime}\n${block}\n\n`;
+      currentTime += durationPerImage;
+    });
+    fs.writeFileSync(srtPath, srtContent);
+
+    // 7. Assemblage final : vidéo Ken Burns + audio + sous-titres brûlés
+    console.log('Assemblage final avec sous-titres…');
+    const videoPath = path.join(tmpDir, 'video.mp4');
+
+    // Style sous-titres : blanc, contour noir, centré bas, lisible mobile
+    const subtitleStyle = [
+      'FontName=Arial',
+      'FontSize=18',
+      'PrimaryColour=&H00FFFFFF',
+      'OutlineColour=&H00000000',
+      'BackColour=&H80000000',
+      'Bold=1',
+      'Outline=2',
+      'Shadow=1',
+      'Alignment=2',
+      'MarginV=60',
+    ].join(',');
+
+    // Échapper le chemin SRT pour ffmpeg (espaces et caractères spéciaux)
+    const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
+
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(concatVideoPath)
         .input(audioPath)
         .outputOptions([
           '-c:v libx264',
@@ -218,12 +319,12 @@ app.post('/assemble-and-publish', async (req, res) => {
           '-shortest',
           '-movflags +faststart',
           '-threads 1',
-          '-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1',
+          `-vf subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`,
         ])
         .output(videoPath)
-        .on('start', (cmd) => console.log('ffmpeg start'))
+        .on('start', () => console.log('ffmpeg final start'))
         .on('progress', (p) => console.log('ffmpeg:', p.percent?.toFixed(0) + '%'))
-        .on('end', () => { console.log('ffmpeg terminé'); resolve(); })
+        .on('end', () => { console.log('ffmpeg final terminé'); resolve(); })
         .on('error', (err) => { console.error('ffmpeg error:', err.message); reject(err); })
         .run();
     });
@@ -231,7 +332,7 @@ app.post('/assemble-and-publish', async (req, res) => {
     const videoSize = fs.statSync(videoPath).size;
     console.log(`Vidéo assemblée (${Math.round(videoSize/1024)}KB)`);
 
-    // 5. Upload YouTube PUBLIC
+    // 8. Upload YouTube PUBLIC
     console.log('Upload YouTube…');
     const videoBuffer = fs.readFileSync(videoPath);
     const metadata = {
@@ -286,7 +387,8 @@ app.post('/assemble-and-publish', async (req, res) => {
   }
 });
 
-// ── UTILITAIRE — durée audio ──────────────────────────────
+// ── UTILITAIRES ───────────────────────────────────────────
+
 function getAudioDuration(audioPath) {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(audioPath, (err, metadata) => {
@@ -294,6 +396,26 @@ function getAudioDuration(audioPath) {
       else resolve(metadata.format.duration || 30);
     });
   });
+}
+
+// Formater en SRT : HH:MM:SS,mmm
+function formatSRTTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.round((seconds % 1) * 1000);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
+}
+
+// Découper un texte en N morceaux équilibrés
+function splitIntoChunks(text, n) {
+  const words = text.split(' ');
+  const chunkSize = Math.ceil(words.length / n);
+  const chunks = [];
+  for (let i = 0; i < n; i++) {
+    chunks.push(words.slice(i * chunkSize, (i + 1) * chunkSize).join(' '));
+  }
+  return chunks.filter(Boolean);
 }
 
 // ── AGENT IA — Cycle complet d'amélioration ──────────────
@@ -488,20 +610,20 @@ Génère un script optimisé pour YouTube Shorts sur : "${topic}"
 Tags : ${(tags || []).join(', ')}
 
 RÈGLES ABSOLUES :
-- Narration 60-75 mots MAX (25-30 secondes)
+- Narration 40-50 mots MAX (15-18 secondes), 4 blocs séparés par |
 - Accroche percutante dans les 3 premières secondes
 - Ton ultra dynamique, direct, engageant
-- Call-to-action court en fin
-- 4 prompts images verticaux 9:16, style cinématique
+- Pas de CTA générique en fin
+- 4 prompts images verticaux 9:16, style identique et cohérent
 
 Réponds UNIQUEMENT en JSON valide :
 {
-  "title": "Titre accrocheur #Shorts (max 60 chars)",
-  "description": "Description avec hashtags #Shorts (max 200 chars)",
+  "title": "Titre 40 chars max, sans hashtag",
+  "description": "2 phrases max + hashtags #Shorts (max 200 chars)",
   "tags": ["Shorts", "tag1", "tag2", "tag3"],
-  "narration": "Script 60-75 mots, accroche + corps + CTA",
-  "imagePrompts": ["prompt1 9:16 cinematic vertical", "prompt2", "prompt3", "prompt4"],
-  "thumbnailPrompt": "prompt thumbnail vertical ultra impactant"
+  "narration": "40-50 mots, 4 blocs séparés par |",
+  "imagePrompts": ["Vertical 9:16, [style], scène 1", "Vertical 9:16, [style], scène 2", "Vertical 9:16, [style], scène 3", "Vertical 9:16, [style], scène 4"],
+  "thumbnailPrompt": "Vertical 9:16, même style, scène la plus impactante"
 }`;
 }
 
@@ -511,5 +633,5 @@ app.get('/elevenlabs-quota', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v10 — Agent IA activé — port ${PORT}`);
+  console.log(`AutoTube backend v11 — Ken Burns + Sous-titres activés — port ${PORT}`);
 });
