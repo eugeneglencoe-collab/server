@@ -17,7 +17,111 @@ app.use(express.json({ limit: '10mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '11.0.0' });
+  res.json({ status: 'AutoTube backend running ✓', version: '12.0.0' });
+});
+
+// ── REDDIT — Récupération d'images par sujet ─────────────
+const SUBREDDIT_MAP = {
+  histoire:    ['HistoryPorn', 'ColorizedHistory', 'Damnthatsinteresting', 'OldSchoolCool'],
+  science:     ['Damnthatsinteresting', 'interestingasfuck', 'educationalgifs', 'science'],
+  nature:      ['EarthPorn', 'NaturePorn', 'pics', 'wildlife'],
+  espace:      ['spaceporn', 'Astronomy', 'space', 'astrophotography'],
+  animaux:     ['aww', 'AnimalsBeingBros', 'NatureIsFuckingLit', 'wildlife'],
+  technologie: ['Damnthatsinteresting', 'interestingasfuck', 'technology', 'Futurology'],
+  sport:       ['sports', 'Damnthatsinteresting', 'interestingasfuck'],
+  cuisine:     ['FoodPorn', 'food', 'recipes', 'GifRecipes'],
+  voyage:      ['travel', 'CityPorn', 'EarthPorn', 'pics'],
+  default:     ['Damnthatsinteresting', 'interestingasfuck', 'pics', 'HistoryPorn'],
+};
+
+function getSubredditsForTopic(topic) {
+  const t = topic.toLowerCase();
+  for (const [key, subs] of Object.entries(SUBREDDIT_MAP)) {
+    if (t.includes(key)) return subs;
+  }
+  return SUBREDDIT_MAP.default;
+}
+
+async function fetchRedditImages(topic, count = 4) {
+  const subreddits = getSubredditsForTopic(topic);
+  const imageUrls = [];
+  const usedUrls = new Set();
+  const searchQuery = encodeURIComponent(topic.split(' ').slice(0, 3).join(' '));
+
+  for (const subreddit of subreddits) {
+    if (imageUrls.length >= count) break;
+
+    try {
+      const redditUrl = `https://www.reddit.com/r/${subreddit}/search.json?q=${searchQuery}&restrict_sr=1&sort=top&t=year&limit=25`;
+      const resp = await fetch(redditUrl, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'AutoTube/1.0 (content creator bot)',
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!resp.ok) continue;
+
+      const data = await resp.json();
+      const posts = data?.data?.children || [];
+
+      for (const post of posts) {
+        if (imageUrls.length >= count) break;
+
+        const p = post.data;
+        if (p.over_18) continue;
+        if (usedUrls.has(p.url)) continue;
+
+        const isImage = /\.(jpg|jpeg|png|webp)(\?.*)?$/i.test(p.url);
+        let imgUrl = null;
+
+        if (isImage) {
+          imgUrl = p.url;
+        } else if (p.preview?.images?.[0]?.source?.url) {
+          imgUrl = p.preview.images[0].source.url.replace(/&amp;/g, '&');
+        }
+
+        if (!imgUrl) continue;
+
+        try {
+          const check = await fetch(imgUrl, { method: 'HEAD', timeout: 8000 });
+          if (!check.ok) continue;
+        } catch {
+          continue;
+        }
+
+        imageUrls.push(imgUrl);
+        usedUrls.add(imgUrl);
+        console.log(`Reddit image ${imageUrls.length}/${count} — r/${subreddit}`);
+      }
+    } catch (e) {
+      console.log(`Reddit r/${subreddit} — erreur : ${e.message}`);
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  // Fallback Picsum si pas assez d'images Reddit
+  while (imageUrls.length < count) {
+    const seed = Date.now() + imageUrls.length;
+    imageUrls.push(`https://picsum.photos/seed/${seed}/768/1344`);
+    console.log(`Fallback Picsum pour image ${imageUrls.length}`);
+  }
+
+  return imageUrls.slice(0, count);
+}
+
+app.post('/fetch-reddit-images', async (req, res) => {
+  const { topic, count } = req.body;
+  if (!topic) return res.status(400).json({ error: 'topic manquant' });
+  try {
+    const imageUrls = await fetchRedditImages(topic, count || 4);
+    res.json({ imageUrls });
+  } catch (err) {
+    console.error('Reddit fetch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── GEMINI — Génération de script SHORTS ─────────────────
@@ -28,35 +132,40 @@ app.post('/generate-script', async (req, res) => {
   const geminiKey = apiKey || process.env.GEMINI_API_KEY;
   if (!geminiKey) return res.status(400).json({ error: 'Clé Gemini manquante' });
 
-  const prompt = `Tu es un expert en création de contenu YouTube Shorts francophone viral.
+  const prompt = `Tu es un expert en création de contenu YouTube Shorts francophone viral, spécialisé dans la maximisation de la rétention d'audience.
+
 Génère un script pour un YouTube Short sur : "${topic}"
 Niche / Tags : ${(tags||[]).join(', ')}
 
-RÈGLES ABSOLUES :
-- La narration doit faire EXACTEMENT 40 à 50 mots (= 15-18 secondes de voix off)
-- Structurée en 4 blocs de 10-12 mots chacun, un bloc par image
-- Bloc 1 : accroche choc obligatoire ("Tu savais que...", "C'est interdit de...", "Personne ne parle de...")
-- Bloc 2 : développement surprenant
-- Bloc 3 : fait clé ou twist inattendu
-- Bloc 4 : phrase de chute mémorable, max 8 mots, pas de CTA générique
-- Ton direct, rythmé, chaque phrase doit donner envie d'entendre la suivante
-- JAMAIS de "Abonne-toi" ou "Commente" dans la narration
+RÉTENTION — RÈGLES CRITIQUES :
+- La première phrase doit créer une TENSION IMMÉDIATE — une promesse, un mystère, une contradiction choquante
+- Chaque bloc doit se terminer sur une micro-tension qui force à rester
+- Rythme haché : phrases courtes, maximum 8 mots par phrase, jamais deux longues à la suite
+- Vocabulaire 100% français de France métropolitaine : "vachement", "carrément", "c'est dingue", "franchement" — JAMAIS de québécismes
+- Zéro mot de remplissage : chaque mot doit justifier sa présence
+- Construire vers un twist ou révélation finale surprenante
 
-IMAGES :
-- 4 prompts en anglais, style identique sur les 4 pour cohérence visuelle
-- Format vertical 9:16, ultra-réaliste ou illustratif selon le sujet
-- Chaque prompt commence par "Vertical 9:16, [style défini], " puis la scène précise
-- Le style doit être défini une fois et répété : ex. "dramatic cinematic photography" ou "vintage editorial illustration"
-- Scène précise, pas abstraite : un lieu, un personnage, une action, une lumière
+NARRATION :
+- EXACTEMENT 40 à 50 mots
+- 4 blocs séparés par | , un bloc par image, 10-12 mots par bloc
+- Bloc 1 : accroche choc — fait contre-intuitif ou question rhétorique percutante
+- Bloc 2 : développement qui creuse la tension, révèle quelque chose d'inattendu
+- Bloc 3 : twist ou fait clé qui renverse ce qu'on croyait savoir
+- Bloc 4 : chute mémorable, percutante, max 8 mots — laisse une impression durable
+- JAMAIS "Abonne-toi", "Commente", "Partage"
+
+MOTS-CLÉS REDDIT :
+- Génère 4 requêtes de recherche en anglais pour trouver des images Reddit en lien avec chaque bloc
+- Chaque requête = 2-3 mots précis qui décrivent visuellement le contenu du bloc
 
 Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
 {
-  "title": "Titre 40 chars max, sans hashtag",
-  "description": "2 phrases max + hashtags #Shorts #[niche]",
+  "title": "Titre 40 chars max, accrocheur, crée de la curiosité, sans hashtag",
+  "description": "2 phrases percutantes + hashtags #Shorts #[niche]",
   "tags": ["Shorts", "tag1", "tag2", "tag3"],
-  "narration": "40-50 mots, 4 blocs séparés par | pour synchronisation",
-  "imagePrompts": ["prompt 1", "prompt 2", "prompt 3", "prompt 4"],
-  "thumbnailPrompt": "Vertical 9:16, même style que les images, scène la plus impactante du sujet, texte overlay suggestion"
+  "narration": "40-50 mots, 4 blocs séparés par | , rythme haché, vocabulaire français de France",
+  "imageSearchQueries": ["query bloc 1 en anglais", "query bloc 2", "query bloc 3", "query bloc 4"],
+  "thumbnailPrompt": "description visuelle de la scène la plus impactante pour la miniature"
 }`;
 
   try {
@@ -79,10 +188,6 @@ Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
     const clean = text.replace(/```json|```/g, '').trim();
     const script = JSON.parse(clean);
 
-    if (script.imagePrompts && script.imagePrompts.length > 4) {
-      script.imagePrompts = script.imagePrompts.slice(0, 4);
-    }
-
     res.json({
       script,
       usage: {
@@ -97,7 +202,7 @@ Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
   }
 });
 
-// ── UNREAL SPEECH — Synthèse vocale ──────────────────────
+// ── UNREAL SPEECH — Synthèse vocale (accent français amélioré) ───
 app.post('/generate-voice', async (req, res) => {
   const { text, voiceId, apiKey } = req.body;
   if (!text) return res.status(400).json({ error: 'text manquant' });
@@ -117,8 +222,12 @@ app.post('/generate-voice', async (req, res) => {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${unrealKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        Text: text, VoiceId: voice, Bitrate: '192k',
-        Speed: '0.1', Pitch: '1', OutputFormat: 'uri',
+        Text: text,
+        VoiceId: voice,
+        Bitrate: '192k',
+        Speed: '0.3',   // Plus rapide = plus dynamique, moins d'accent étranger perceptible
+        Pitch: '1.05',  // Légèrement plus haut = voix plus vive
+        OutputFormat: 'uri',
       }),
     });
 
@@ -136,7 +245,7 @@ app.post('/generate-voice', async (req, res) => {
   }
 });
 
-// ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE — v2 (Ken Burns + Sous-titres) ─────────
+// ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE — v3 (Reddit + Ken Burns + Sous-titres) ─
 app.post('/assemble-and-publish', async (req, res) => {
   const { imageUrls, audioUrl, script, tags, ytToken } = req.body;
   if (!imageUrls || !imageUrls.length) return res.status(400).json({ error: 'imageUrls manquantes' });
@@ -146,7 +255,7 @@ app.post('/assemble-and-publish', async (req, res) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotube-'));
 
   try {
-    // 1. Télécharger les images avec fallback
+    // 1. Télécharger et recadrer les images en 9:16
     console.log(`Téléchargement de ${imageUrls.length} images…`);
     const imagePaths = [];
 
@@ -155,29 +264,47 @@ app.post('/assemble-and-publish', async (req, res) => {
 
       const urlsToTry = [
         imageUrls[i],
-        `https://image.pollinations.ai/prompt/${encodeURIComponent('cinematic vertical shot 9:16 high quality')}?width=768&height=1344&nologo=true&seed=${i}`,
-        `https://picsum.photos/768/1344?random=${i}`,
+        `https://picsum.photos/seed/${Date.now() + i}/768/1344`,
       ];
 
       for (const url of urlsToTry) {
         try {
-          console.log(`Image ${i+1} — essai : ${url.slice(0, 60)}…`);
-          const imgResp = await fetch(url, { timeout: 90000 });
+          console.log(`Image ${i+1} — essai : ${url.slice(0, 80)}…`);
+          const imgResp = await fetch(url, {
+            timeout: 30000,
+            headers: { 'User-Agent': 'AutoTube/1.0' },
+          });
           if (!imgResp.ok) throw new Error(`Status ${imgResp.status}`);
           imgBuffer = await imgResp.buffer();
-          if (imgBuffer.length > 1000) break;
+          if (imgBuffer.length > 5000) break;
         } catch (e) {
           console.log(`Échec : ${e.message}`);
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise(r => setTimeout(r, 1000));
         }
       }
 
       if (!imgBuffer) throw new Error(`Image ${i+1} impossible à télécharger`);
 
+      // Sauvegarder le raw puis recadrer en 9:16
+      const rawPath = path.join(tmpDir, `raw_${i}.jpg`);
       const imgPath = path.join(tmpDir, `img_${i}.jpg`);
-      fs.writeFileSync(imgPath, imgBuffer);
+      fs.writeFileSync(rawPath, imgBuffer);
+
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(rawPath)
+          .outputOptions([
+            '-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1',
+            '-q:v 2',
+          ])
+          .output(imgPath)
+          .on('end', resolve)
+          .on('error', reject)
+          .run();
+      });
+
       imagePaths.push(imgPath);
-      console.log(`Image ${i+1}/${imageUrls.length} ✓ (${Math.round(imgBuffer.length/1024)}KB)`);
+      console.log(`Image ${i+1}/${imageUrls.length} ✓ recadrée 9:16`);
     }
 
     // 2. Télécharger l'audio
@@ -194,20 +321,15 @@ app.post('/assemble-and-publish', async (req, res) => {
     console.log(`Durée audio : ${audioDuration.toFixed(1)}s`);
     const durationPerImage = audioDuration / imagePaths.length;
 
-    // 4. Générer les clips individuels avec effet Ken Burns
-    console.log('Génération Ken Burns par image…');
+    // 4. Clips Ken Burns
+    console.log('Génération Ken Burns…');
     const clipPaths = [];
     const fps = 24;
 
-    // Directions Ken Burns alternées pour éviter la monotonie
     const kenBurnsEffects = [
-      // Zoom avant centré
       (frames) => `zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=720x1280:fps=${fps}`,
-      // Panoramique gauche → droite + léger zoom
       (frames) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,x+1)':y='ih/2-(ih/zoom/2)':d=${frames}:s=720x1280:fps=${fps}`,
-      // Zoom arrière depuis le haut
       (frames) => `zoompan=z='if(lte(zoom,1.0),1.3,max(zoom-0.0015,1.0))':x='iw/2-(iw/zoom/2)':y='0':d=${frames}:s=720x1280:fps=${fps}`,
-      // Panoramique droite → gauche
       (frames) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,max(x-1,0))':y='ih/2-(ih/zoom/2)':d=${frames}:s=720x1280:fps=${fps}`,
     ];
 
@@ -240,7 +362,7 @@ app.post('/assemble-and-publish', async (req, res) => {
       console.log(`Clip ${i+1}/${imagePaths.length} Ken Burns ✓`);
     }
 
-    // 5. Concaténer les clips Ken Burns
+    // 5. Concaténation
     console.log('Concaténation des clips…');
     const concatPath = path.join(tmpDir, 'concat.txt');
     fs.writeFileSync(concatPath, clipPaths.map(p => `file '${p}'`).join('\n'));
@@ -250,59 +372,39 @@ app.post('/assemble-and-publish', async (req, res) => {
       ffmpeg()
         .input(concatPath)
         .inputOptions(['-f concat', '-safe 0'])
-        .outputOptions([
-          '-c:v libx264',
-          '-preset ultrafast',
-          '-crf 26',
-          '-pix_fmt yuv420p',
-          '-an',
-          '-threads 1',
-        ])
+        .outputOptions(['-c:v libx264', '-preset ultrafast', '-crf 26', '-pix_fmt yuv420p', '-an', '-threads 1'])
         .output(concatVideoPath)
         .on('end', resolve)
         .on('error', reject)
         .run();
     });
 
-    // 6. Générer le fichier SRT de sous-titres
-    // La narration est séparée par "|" (ex: "Bloc 1 | Bloc 2 | Bloc 3 | Bloc 4")
+    // 6. Sous-titres SRT
     console.log('Génération des sous-titres…');
     const srtPath = path.join(tmpDir, 'subtitles.srt');
     const narration = script.narration || '';
     const blocks = narration.split('|').map(b => b.trim()).filter(Boolean);
-
-    // Fallback : découper en 4 parts égales si pas de séparateur |
     const subtitleBlocks = blocks.length >= 2 ? blocks : splitIntoChunks(narration, imagePaths.length);
 
     let srtContent = '';
     let currentTime = 0;
     subtitleBlocks.forEach((block, i) => {
-      const startTime = formatSRTTime(currentTime);
-      const endTime = formatSRTTime(currentTime + durationPerImage - 0.1);
-      srtContent += `${i + 1}\n${startTime} --> ${endTime}\n${block}\n\n`;
+      srtContent += `${i + 1}\n${formatSRTTime(currentTime)} --> ${formatSRTTime(currentTime + durationPerImage - 0.1)}\n${block}\n\n`;
       currentTime += durationPerImage;
     });
     fs.writeFileSync(srtPath, srtContent);
 
-    // 7. Assemblage final : vidéo Ken Burns + audio + sous-titres brûlés
-    console.log('Assemblage final avec sous-titres…');
+    // 7. Assemblage final
+    console.log('Assemblage final…');
     const videoPath = path.join(tmpDir, 'video.mp4');
 
-    // Style sous-titres : blanc, contour noir, centré bas, lisible mobile
     const subtitleStyle = [
-      'FontName=Arial',
-      'FontSize=18',
-      'PrimaryColour=&H00FFFFFF',
-      'OutlineColour=&H00000000',
-      'BackColour=&H80000000',
-      'Bold=1',
-      'Outline=2',
-      'Shadow=1',
-      'Alignment=2',
-      'MarginV=60',
+      'FontName=Arial', 'FontSize=18',
+      'PrimaryColour=&H00FFFFFF', 'OutlineColour=&H00000000',
+      'BackColour=&H80000000', 'Bold=1', 'Outline=2',
+      'Shadow=1', 'Alignment=2', 'MarginV=60',
     ].join(',');
 
-    // Échapper le chemin SRT pour ffmpeg (espaces et caractères spéciaux)
     const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
     await new Promise((resolve, reject) => {
@@ -310,29 +412,22 @@ app.post('/assemble-and-publish', async (req, res) => {
         .input(concatVideoPath)
         .input(audioPath)
         .outputOptions([
-          '-c:v libx264',
-          '-preset ultrafast',
-          '-crf 28',
-          '-c:a aac',
-          '-b:a 128k',
-          '-pix_fmt yuv420p',
-          '-shortest',
-          '-movflags +faststart',
-          '-threads 1',
+          '-c:v libx264', '-preset ultrafast', '-crf 28',
+          '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
+          '-shortest', '-movflags +faststart', '-threads 1',
           `-vf subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`,
         ])
         .output(videoPath)
         .on('start', () => console.log('ffmpeg final start'))
         .on('progress', (p) => console.log('ffmpeg:', p.percent?.toFixed(0) + '%'))
-        .on('end', () => { console.log('ffmpeg final terminé'); resolve(); })
+        .on('end', () => { console.log('ffmpeg terminé ✓'); resolve(); })
         .on('error', (err) => { console.error('ffmpeg error:', err.message); reject(err); })
         .run();
     });
 
-    const videoSize = fs.statSync(videoPath).size;
-    console.log(`Vidéo assemblée (${Math.round(videoSize/1024)}KB)`);
+    console.log(`Vidéo assemblée (${Math.round(fs.statSync(videoPath).size/1024)}KB)`);
 
-    // 8. Upload YouTube PUBLIC
+    // 8. Upload YouTube
     console.log('Upload YouTube…');
     const videoBuffer = fs.readFileSync(videoPath);
     const metadata = {
@@ -343,10 +438,7 @@ app.post('/assemble-and-publish', async (req, res) => {
         categoryId: '22',
         defaultLanguage: 'fr',
       },
-      status: {
-        privacyStatus: 'public',
-        madeForKids: false,
-      },
+      status: { privacyStatus: 'public', madeForKids: false },
     };
 
     const boundary = '-------314159265358979323846';
@@ -398,7 +490,6 @@ function getAudioDuration(audioPath) {
   });
 }
 
-// Formater en SRT : HH:MM:SS,mmm
 function formatSRTTime(seconds) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -407,7 +498,6 @@ function formatSRTTime(seconds) {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
 }
 
-// Découper un texte en N morceaux équilibrés
 function splitIntoChunks(text, n) {
   const words = text.split(' ');
   const chunkSize = Math.ceil(words.length / n);
@@ -418,7 +508,7 @@ function splitIntoChunks(text, n) {
   return chunks.filter(Boolean);
 }
 
-// ── AGENT IA — Cycle complet d'amélioration ──────────────
+// ── AGENT IA ──────────────────────────────────────────────
 const agentHistory = [];
 
 app.post('/agent-run', async (req, res) => {
@@ -435,18 +525,10 @@ app.post('/agent-run', async (req, res) => {
   const log = [];
 
   try {
-    // Phase 1 — Meilleur prompt connu
-    const lastGood = agentHistory
-      .filter(h => h.score >= 7)
-      .sort((a, b) => b.score - a.score)[0];
-
-    const basePrompt = lastGood
-      ? `Améliore ce prompt qui a obtenu ${lastGood.score}/10 : ${lastGood.narrationPrompt}`
-      : null;
-
+    const lastGood = agentHistory.filter(h => h.score >= 7).sort((a, b) => b.score - a.score)[0];
+    const basePrompt = lastGood ? `Améliore ce prompt qui a obtenu ${lastGood.score}/10 : ${lastGood.narrationPrompt}` : null;
     log.push('Phase 1 : récupération du meilleur prompt ✓');
 
-    // Phase 2 — Script via Gemini
     log.push('Phase 2 : génération du script…');
     const scriptResp = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI}`,
@@ -461,136 +543,73 @@ app.post('/agent-run', async (req, res) => {
     );
     const scriptData = await scriptResp.json();
     if (!scriptResp.ok) throw new Error(scriptData.error?.message || 'Erreur Gemini');
-    const scriptText = scriptData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const script = JSON.parse(scriptText.replace(/```json|```/g, '').trim());
-    if (script.imagePrompts && script.imagePrompts.length > 4) script.imagePrompts = script.imagePrompts.slice(0, 4);
+    const script = JSON.parse(scriptData.candidates?.[0]?.content?.parts?.[0]?.text.replace(/```json|```/g, '').trim());
     log.push('Phase 2 : script généré ✓');
 
-    // Phase 3 — Voix via Unreal Speech
     log.push('Phase 3 : génération de la voix…');
     const voiceResp = await fetch('https://api.v7.unrealspeech.com/speech', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${UNREAL}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        Text: script.narration, VoiceId: 'Scarlett',
-        Bitrate: '192k', Speed: '0.1', Pitch: '1', OutputFormat: 'uri',
-      }),
+      body: JSON.stringify({ Text: script.narration, VoiceId: 'Scarlett', Bitrate: '192k', Speed: '0.3', Pitch: '1.05', OutputFormat: 'uri' }),
     });
     if (!voiceResp.ok) throw new Error('Erreur Unreal Speech');
-    const voiceData = await voiceResp.json();
-    const audioUrl = voiceData.OutputUri;
+    const audioUrl = (await voiceResp.json()).OutputUri;
     log.push('Phase 3 : voix générée ✓');
 
-    // Phase 4 — URLs images Pollinations
-    log.push('Phase 4 : génération des URLs images…');
-    const imageUrls = script.imagePrompts.map((p, i) =>
-      `https://image.pollinations.ai/prompt/${encodeURIComponent(p)}?width=768&height=1344&nologo=true&seed=${iterationId + i}`
-    );
-    log.push('Phase 4 : URLs images générées ✓');
+    log.push('Phase 4 : recherche images Reddit…');
+    const imageUrls = await fetchRedditImages(topic, 4);
+    log.push(`Phase 4 : ${imageUrls.length} images Reddit ✓`);
 
-    // Phase 5 — Télécharge la première image pour analyse
-    log.push('Phase 5 : téléchargement de la frame pour analyse…');
+    log.push('Phase 5 : téléchargement frame pour analyse…');
     let frameBase64 = null;
     try {
-      const frameResp = await fetch(imageUrls[0], { timeout: 60000 });
+      const frameResp = await fetch(imageUrls[0], { timeout: 30000, headers: { 'User-Agent': 'AutoTube/1.0' } });
       if (frameResp.ok) {
-        const frameBuffer = await frameResp.buffer();
-        frameBase64 = frameBuffer.toString('base64');
+        frameBase64 = (await frameResp.buffer()).toString('base64');
         log.push('Phase 5 : frame extraite ✓');
-      } else {
-        log.push('Phase 5 : frame indisponible, analyse texte seule');
       }
     } catch (e) {
-      log.push(`Phase 5 : erreur frame (${e.message}), analyse texte seule`);
+      log.push(`Phase 5 : erreur frame, analyse texte seule`);
     }
 
-    // Phase 6 — Analyse Claude
     log.push('Phase 6 : analyse qualité via Claude…');
     const claudeContent = [];
-
-    if (frameBase64) {
-      claudeContent.push({
-        type: 'image',
-        source: { type: 'base64', media_type: 'image/jpeg', data: frameBase64 },
-      });
-    }
-
+    if (frameBase64) claudeContent.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: frameBase64 } });
     claudeContent.push({
       type: 'text',
-      text: `Tu es un expert YouTube Shorts. ${frameBase64 ? 'Analyse cette image et le script ci-dessous.' : 'Analyse ce script pour YouTube Shorts.'}
-
+      text: `Tu es un expert YouTube Shorts. Analyse ce script et note sur 10.
 Script : "${script.narration}"
 Titre : "${script.title}"
-Prompts images : ${script.imagePrompts.join(' | ')}
-
-Note sur 10 selon les critères YouTube Shorts.
 Réponds UNIQUEMENT en JSON valide :
-{
-  "score": 7,
-  "criteres": {
-    "composition_verticale": 8,
-    "qualite_visuelle": 7,
-    "impact_visuel": 6,
-    "lisibilite_mobile": 8,
-    "coherence_yt": 7
-  },
-  "points_forts": ["point 1", "point 2"],
-  "ameliorations": ["amélioration 1", "amélioration 2"],
-  "prompt_ameliore": "nouveau prompt image amélioré pour YouTube Shorts vertical cinématique"
-}`,
+{"score":7,"criteres":{"impact_accroche":8,"rythme_narration":7,"qualite_visuelle":6,"retention_estimee":8,"coherence_yt":7},"points_forts":["point 1"],"ameliorations":["amélioration 1"]}`,
     });
 
     const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'x-api-key': CLAUDE,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: claudeContent }],
-      }),
+      headers: { 'x-api-key': CLAUDE, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1024, messages: [{ role: 'user', content: claudeContent }] }),
     });
-
     const claudeData = await claudeResp.json();
     if (!claudeResp.ok) throw new Error(claudeData.error?.message || 'Erreur Claude API');
+    const analysis = JSON.parse(claudeData.content?.[0]?.text.replace(/```json|```/g, '').trim() || '{}');
+    log.push(`Phase 6 : score ${analysis.score}/10 ✓`);
 
-    const analysisText = claudeData.content?.[0]?.text || '{}';
-    const analysis = JSON.parse(analysisText.replace(/```json|```/g, '').trim());
-    log.push(`Phase 6 : analyse terminée — score ${analysis.score}/10 ✓`);
-
-    // Phase 7 — Sauvegarde
-    const iteration = {
-      id: iterationId,
-      date: new Date().toISOString(),
-      topic, tags, script, audioUrl, imageUrls, analysis,
-      score: analysis.score,
-      narrationPrompt: script.narration,
-      log,
-      status: 'pending',
-    };
-
+    const iteration = { id: iterationId, date: new Date().toISOString(), topic, tags, script, audioUrl, imageUrls, analysis, score: analysis.score, narrationPrompt: script.narration, log, status: 'pending' };
     agentHistory.unshift(iteration);
     if (agentHistory.length > 20) agentHistory.pop();
     log.push('Phase 7 : itération sauvegardée ✓');
 
-    console.log(`Agent cycle terminé — score ${analysis.score}/10`);
     res.json({ success: true, iteration });
-
   } catch (err) {
     console.error('Agent error:', err.message);
     res.status(500).json({ error: err.message, log });
   }
 });
 
-// ── AGENT — Historique ────────────────────────────────────
 app.get('/agent-history', (req, res) => {
   res.json({ iterations: agentHistory, total: agentHistory.length });
 });
 
-// ── AGENT — Valider/Rejeter ───────────────────────────────
 app.post('/agent-validate', (req, res) => {
   const { id, action } = req.body;
   const iter = agentHistory.find(h => h.id === id);
@@ -599,32 +618,13 @@ app.post('/agent-validate', (req, res) => {
   res.json({ success: true, iteration: iter });
 });
 
-// ── UTILITAIRE — Prompt agent ─────────────────────────────
 function buildAgentPrompt(topic, tags, basePrompt) {
-  const amelioration = basePrompt
-    ? `\nUTILISE ce prompt de base et améliore-le : "${basePrompt}"\n`
-    : '';
-
+  const amelioration = basePrompt ? `\nUTILISE ce prompt et améliore-le : "${basePrompt}"\n` : '';
   return `Tu es un expert YouTube Shorts viral francophone.${amelioration}
-Génère un script optimisé pour YouTube Shorts sur : "${topic}"
-Tags : ${(tags || []).join(', ')}
-
-RÈGLES ABSOLUES :
-- Narration 40-50 mots MAX (15-18 secondes), 4 blocs séparés par |
-- Accroche percutante dans les 3 premières secondes
-- Ton ultra dynamique, direct, engageant
-- Pas de CTA générique en fin
-- 4 prompts images verticaux 9:16, style identique et cohérent
-
+Génère un script sur : "${topic}" — Tags : ${(tags || []).join(', ')}
+RÈGLES : narration 40-50 mots, 4 blocs séparés par |, accroche choc bloc 1, twist bloc 3, chute mémorable bloc 4, vocabulaire français de France, JAMAIS de CTA.
 Réponds UNIQUEMENT en JSON valide :
-{
-  "title": "Titre 40 chars max, sans hashtag",
-  "description": "2 phrases max + hashtags #Shorts (max 200 chars)",
-  "tags": ["Shorts", "tag1", "tag2", "tag3"],
-  "narration": "40-50 mots, 4 blocs séparés par |",
-  "imagePrompts": ["Vertical 9:16, [style], scène 1", "Vertical 9:16, [style], scène 2", "Vertical 9:16, [style], scène 3", "Vertical 9:16, [style], scène 4"],
-  "thumbnailPrompt": "Vertical 9:16, même style, scène la plus impactante"
-}`;
+{"title":"Titre 40 chars","description":"2 phrases + #Shorts","tags":["Shorts","tag1"],"narration":"blocs séparés par |","imageSearchQueries":["query1","query2","query3","query4"],"thumbnailPrompt":"scène impactante"}`;
 }
 
 // ── QUOTA ────────────────────────────────────────────────
@@ -633,5 +633,5 @@ app.get('/elevenlabs-quota', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v11 — Ken Burns + Sous-titres activés — port ${PORT}`);
+  console.log(`AutoTube backend v12 — Reddit + Voix FR + Ken Burns + Sous-titres — port ${PORT}`);
 });
