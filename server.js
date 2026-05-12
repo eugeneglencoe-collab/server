@@ -6,6 +6,7 @@ const ffmpegStatic = require('ffmpeg-static');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFile } = require('child_process');
 
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
@@ -17,7 +18,7 @@ app.use(express.json({ limit: '10mb' }));
 
 // ── HEALTH CHECK ─────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'AutoTube backend running ✓', version: '12.0.0' });
+  res.json({ status: 'AutoTube backend running ✓', version: '13.0.0' });
 });
 
 // ── REDDIT — Récupération d'images par sujet ─────────────
@@ -44,52 +45,42 @@ function getSubredditsForTopic(topic) {
 
 async function fetchRedditImages(topic, count = 4) {
   const subreddits = getSubredditsForTopic(topic);
-  const imageUrls = [];
-  const usedUrls = new Set();
+  const imageUrls  = [];
+  const usedUrls   = new Set();
   const searchQuery = encodeURIComponent(topic.split(' ').slice(0, 3).join(' '));
 
   for (const subreddit of subreddits) {
     if (imageUrls.length >= count) break;
-
     try {
       const redditUrl = `https://www.reddit.com/r/${subreddit}/search.json?q=${searchQuery}&restrict_sr=1&sort=top&t=year&limit=25`;
       const resp = await fetch(redditUrl, {
         timeout: 15000,
-        headers: {
-          'User-Agent': 'AutoTube/1.0 (content creator bot)',
-          'Accept': 'application/json',
-        },
+        headers: { 'User-Agent': 'AutoTube/1.0 (content creator bot)', 'Accept': 'application/json' },
       });
-
       if (!resp.ok) continue;
 
-      const data = await resp.json();
+      const data  = await resp.json();
       const posts = data?.data?.children || [];
 
       for (const post of posts) {
         if (imageUrls.length >= count) break;
-
         const p = post.data;
         if (p.over_18) continue;
         if (usedUrls.has(p.url)) continue;
 
         const isImage = /\.(jpg|jpeg|png|webp)(\?.*)?$/i.test(p.url);
         let imgUrl = null;
-
         if (isImage) {
           imgUrl = p.url;
         } else if (p.preview?.images?.[0]?.source?.url) {
           imgUrl = p.preview.images[0].source.url.replace(/&amp;/g, '&');
         }
-
         if (!imgUrl) continue;
 
         try {
           const check = await fetch(imgUrl, { method: 'HEAD', timeout: 8000 });
           if (!check.ok) continue;
-        } catch {
-          continue;
-        }
+        } catch { continue; }
 
         imageUrls.push(imgUrl);
         usedUrls.add(imgUrl);
@@ -98,14 +89,12 @@ async function fetchRedditImages(topic, count = 4) {
     } catch (e) {
       console.log(`Reddit r/${subreddit} — erreur : ${e.message}`);
     }
-
     await new Promise(r => setTimeout(r, 1000));
   }
 
-  // Fallback Picsum si pas assez d'images Reddit
+  // Fallback Picsum
   while (imageUrls.length < count) {
-    const seed = Date.now() + imageUrls.length;
-    imageUrls.push(`https://picsum.photos/seed/${seed}/768/1344`);
+    imageUrls.push(`https://picsum.photos/seed/${Date.now() + imageUrls.length}/768/1344`);
     console.log(`Fallback Picsum pour image ${imageUrls.length}`);
   }
 
@@ -184,73 +173,98 @@ Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
     const data = await response.json();
     if (!response.ok) return res.status(response.status).json({ error: data.error?.message || 'Erreur Gemini' });
 
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const clean = text.replace(/```json|```/g, '').trim();
+    const text   = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const clean  = text.replace(/```json|```/g, '').trim();
     const script = JSON.parse(clean);
 
     res.json({
       script,
       usage: {
-        input_tokens: data.usageMetadata?.promptTokenCount || 0,
+        input_tokens:  data.usageMetadata?.promptTokenCount     || 0,
         output_tokens: data.usageMetadata?.candidatesTokenCount || 0,
       },
     });
-
   } catch (err) {
     console.error('Gemini error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── UNREAL SPEECH — Synthèse vocale (accent français amélioré) ───
+// ── EDGE-TTS — Synthèse vocale (accent français natif) ───
+// Voix disponibles FR : fr-FR-HenriNeural (H), fr-FR-DeniseNeural (F)
+// fr-FR-HenriNeural = voix masculine française naturelle, ton posé et clair
+// fr-FR-DeniseNeural = voix féminine française naturelle, ton vif
+
+const VOICE_MAP = {
+  'Masculin (Henri)':  'fr-FR-HenriNeural',
+  'Féminin (Denise)':  'fr-FR-DeniseNeural',
+  'Masculin (Remy)':   'fr-FR-RemyMultilingualNeural',
+  // Fallbacks anciens noms au cas où le frontend envoie encore les anciens
+  'Neutre (Adam)':     'fr-FR-HenriNeural',
+  'Dynamique (Josh)':  'fr-FR-HenriNeural',
+  'Calme (Rachel)':    'fr-FR-DeniseNeural',
+};
+
+function generateVoiceEdgeTTS(text, voice, outputPath) {
+  return new Promise((resolve, reject) => {
+    // edge-tts est installé comme module Python via pip (disponible sur Render)
+    // Commande : edge-tts --voice <voice> --text "<text>" --write-media <output>
+    const args = [
+      '-m', 'edge_tts',
+      '--voice', voice,
+      '--rate', '+15%',   // +15% = plus dynamique, plus vif
+      '--pitch', '+5Hz',  // légèrement plus haut = voix plus présente
+      '--text', text,
+      '--write-media', outputPath,
+    ];
+
+    execFile('python3', args, { timeout: 30000 }, (err, stdout, stderr) => {
+      if (err) {
+        console.error('edge-tts error:', stderr || err.message);
+        reject(new Error(`edge-tts : ${stderr || err.message}`));
+      } else {
+        resolve(outputPath);
+      }
+    });
+  });
+}
+
 app.post('/generate-voice', async (req, res) => {
-  const { text, voiceId, apiKey } = req.body;
+  const { text, voiceId } = req.body;
   if (!text) return res.status(400).json({ error: 'text manquant' });
 
-  const unrealKey = apiKey || process.env.UNREAL_SPEECH_API_KEY;
-  if (!unrealKey) return res.status(400).json({ error: 'Clé Unreal Speech manquante' });
-
-  const voiceMap = {
-    'Neutre (Adam)':    'Scarlett',
-    'Dynamique (Josh)': 'Dan',
-    'Calme (Rachel)':   'Liv',
-  };
-  const voice = voiceMap[voiceId] || 'Scarlett';
+  const voice   = VOICE_MAP[voiceId] || 'fr-FR-HenriNeural';
+  const tmpDir  = fs.mkdtempSync(path.join(os.tmpdir(), 'edgetts-'));
+  const outPath = path.join(tmpDir, 'voice.mp3');
 
   try {
-    const response = await fetch('https://api.v7.unrealspeech.com/speech', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${unrealKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        Text: text,
-        VoiceId: voice,
-        Bitrate: '192k',
-        Speed: '0.3',   // Plus rapide = plus dynamique, moins d'accent étranger perceptible
-        Pitch: '1.05',  // Légèrement plus haut = voix plus vive
-        OutputFormat: 'uri',
-      }),
+    await generateVoiceEdgeTTS(text, voice, outPath);
+
+    // Lire le fichier et le renvoyer en base64 — le frontend le passera au backend /assemble-and-publish
+    const audioBuffer = fs.readFileSync(outPath);
+    const audioBase64 = audioBuffer.toString('base64');
+
+    res.json({
+      audioBase64,
+      mimeType: 'audio/mpeg',
+      // On renvoie aussi une data URL utilisable directement si besoin
+      audioDataUrl: `data:audio/mpeg;base64,${audioBase64}`,
     });
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      return res.status(response.status).json({ error: err.message || err.error || response.status });
-    }
-
-    const data = await response.json();
-    res.json({ audioUrl: data.OutputUri });
-
   } catch (err) {
-    console.error('Unreal Speech error:', err);
+    console.error('generate-voice error:', err.message);
     res.status(500).json({ error: err.message });
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true }); } catch(e) {}
   }
 });
 
-// ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE — v3 (Reddit + Ken Burns + Sous-titres) ─
+// ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE ────────────────────
+// audioUrl peut être une URL HTTP ou une data URL base64
 app.post('/assemble-and-publish', async (req, res) => {
-  const { imageUrls, audioUrl, script, tags, ytToken } = req.body;
+  const { imageUrls, audioUrl, audioBase64, script, tags, ytToken } = req.body;
   if (!imageUrls || !imageUrls.length) return res.status(400).json({ error: 'imageUrls manquantes' });
-  if (!audioUrl) return res.status(400).json({ error: 'audioUrl manquant' });
-  if (!ytToken)  return res.status(400).json({ error: 'token YouTube manquant' });
+  if (!audioUrl && !audioBase64)       return res.status(400).json({ error: 'audio manquant' });
+  if (!ytToken)                        return res.status(400).json({ error: 'token YouTube manquant' });
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotube-'));
 
@@ -261,7 +275,6 @@ app.post('/assemble-and-publish', async (req, res) => {
 
     for (let i = 0; i < imageUrls.length; i++) {
       let imgBuffer = null;
-
       const urlsToTry = [
         imageUrls[i],
         `https://picsum.photos/seed/${Date.now() + i}/768/1344`,
@@ -269,27 +282,23 @@ app.post('/assemble-and-publish', async (req, res) => {
 
       for (const url of urlsToTry) {
         try {
-          console.log(`Image ${i+1} — essai : ${url.slice(0, 80)}…`);
-          const imgResp = await fetch(url, {
-            timeout: 30000,
-            headers: { 'User-Agent': 'AutoTube/1.0' },
-          });
+          const imgResp = await fetch(url, { timeout: 30000, headers: { 'User-Agent': 'AutoTube/1.0' } });
           if (!imgResp.ok) throw new Error(`Status ${imgResp.status}`);
           imgBuffer = await imgResp.buffer();
           if (imgBuffer.length > 5000) break;
         } catch (e) {
-          console.log(`Échec : ${e.message}`);
+          console.log(`Image ${i+1} échec : ${e.message}`);
           await new Promise(r => setTimeout(r, 1000));
         }
       }
 
       if (!imgBuffer) throw new Error(`Image ${i+1} impossible à télécharger`);
 
-      // Sauvegarder le raw puis recadrer en 9:16
       const rawPath = path.join(tmpDir, `raw_${i}.jpg`);
       const imgPath = path.join(tmpDir, `img_${i}.jpg`);
       fs.writeFileSync(rawPath, imgBuffer);
 
+      // Recadrage intelligent 9:16
       await new Promise((resolve, reject) => {
         ffmpeg()
           .input(rawPath)
@@ -307,19 +316,26 @@ app.post('/assemble-and-publish', async (req, res) => {
       console.log(`Image ${i+1}/${imageUrls.length} ✓ recadrée 9:16`);
     }
 
-    // 2. Télécharger l'audio
-    console.log('Téléchargement audio…');
-    const audioResp = await fetch(audioUrl, { timeout: 30000 });
-    if (!audioResp.ok) throw new Error(`Audio inaccessible : ${audioResp.status}`);
-    const audioBuffer = await audioResp.buffer();
+    // 2. Préparer l'audio (URL HTTP ou base64)
+    console.log('Préparation audio…');
     const audioPath = path.join(tmpDir, 'audio.mp3');
-    fs.writeFileSync(audioPath, audioBuffer);
-    console.log(`Audio téléchargé (${Math.round(audioBuffer.length/1024)}KB)`);
+
+    if (audioBase64) {
+      // Audio généré par edge-tts, transmis en base64
+      fs.writeFileSync(audioPath, Buffer.from(audioBase64, 'base64'));
+      console.log('Audio base64 écrit ✓');
+    } else {
+      // URL HTTP distante (compatibilité legacy)
+      const audioResp = await fetch(audioUrl, { timeout: 30000 });
+      if (!audioResp.ok) throw new Error(`Audio inaccessible : ${audioResp.status}`);
+      fs.writeFileSync(audioPath, await audioResp.buffer());
+      console.log('Audio URL téléchargé ✓');
+    }
 
     // 3. Durée audio → durée par image
-    const audioDuration = await getAudioDuration(audioPath);
-    console.log(`Durée audio : ${audioDuration.toFixed(1)}s`);
+    const audioDuration   = await getAudioDuration(audioPath);
     const durationPerImage = audioDuration / imagePaths.length;
+    console.log(`Durée audio : ${audioDuration.toFixed(1)}s → ${durationPerImage.toFixed(2)}s/image`);
 
     // 4. Clips Ken Burns
     console.log('Génération Ken Burns…');
@@ -327,15 +343,15 @@ app.post('/assemble-and-publish', async (req, res) => {
     const fps = 24;
 
     const kenBurnsEffects = [
-      (frames) => `zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=720x1280:fps=${fps}`,
-      (frames) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,x+1)':y='ih/2-(ih/zoom/2)':d=${frames}:s=720x1280:fps=${fps}`,
-      (frames) => `zoompan=z='if(lte(zoom,1.0),1.3,max(zoom-0.0015,1.0))':x='iw/2-(iw/zoom/2)':y='0':d=${frames}:s=720x1280:fps=${fps}`,
-      (frames) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,max(x-1,0))':y='ih/2-(ih/zoom/2)':d=${frames}:s=720x1280:fps=${fps}`,
+      (f) => `zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${f}:s=720x1280:fps=${fps}`,
+      (f) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,x+1)':y='ih/2-(ih/zoom/2)':d=${f}:s=720x1280:fps=${fps}`,
+      (f) => `zoompan=z='if(lte(zoom,1.0),1.3,max(zoom-0.0015,1.0))':x='iw/2-(iw/zoom/2)':y='0':d=${f}:s=720x1280:fps=${fps}`,
+      (f) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,max(x-1,0))':y='ih/2-(ih/zoom/2)':d=${f}:s=720x1280:fps=${fps}`,
     ];
 
     for (let i = 0; i < imagePaths.length; i++) {
-      const clipPath = path.join(tmpDir, `clip_${i}.mp4`);
-      const frames = Math.ceil(durationPerImage * fps);
+      const clipPath  = path.join(tmpDir, `clip_${i}.mp4`);
+      const frames    = Math.ceil(durationPerImage * fps);
       const zoomFilter = kenBurnsEffects[i % kenBurnsEffects.length](frames);
 
       await new Promise((resolve, reject) => {
@@ -344,14 +360,10 @@ app.post('/assemble-and-publish', async (req, res) => {
           .inputOptions(['-loop 1'])
           .outputOptions([
             `-t ${durationPerImage.toFixed(3)}`,
-            '-c:v libx264',
-            '-preset ultrafast',
-            '-crf 26',
-            '-pix_fmt yuv420p',
-            `-r ${fps}`,
+            '-c:v libx264', '-preset ultrafast', '-crf 26',
+            '-pix_fmt yuv420p', `-r ${fps}`,
             `-vf ${zoomFilter},setsar=1`,
-            '-threads 1',
-            '-an',
+            '-threads 1', '-an',
           ])
           .output(clipPath)
           .on('end', resolve)
@@ -362,11 +374,11 @@ app.post('/assemble-and-publish', async (req, res) => {
       console.log(`Clip ${i+1}/${imagePaths.length} Ken Burns ✓`);
     }
 
-    // 5. Concaténation
-    console.log('Concaténation des clips…');
-    const concatPath = path.join(tmpDir, 'concat.txt');
-    fs.writeFileSync(concatPath, clipPaths.map(p => `file '${p}'`).join('\n'));
+    // 5. Concaténation des clips
+    console.log('Concaténation…');
+    const concatPath      = path.join(tmpDir, 'concat.txt');
     const concatVideoPath = path.join(tmpDir, 'concat_video.mp4');
+    fs.writeFileSync(concatPath, clipPaths.map(p => `file '${p}'`).join('\n'));
 
     await new Promise((resolve, reject) => {
       ffmpeg()
@@ -380,10 +392,10 @@ app.post('/assemble-and-publish', async (req, res) => {
     });
 
     // 6. Sous-titres SRT
-    console.log('Génération des sous-titres…');
+    console.log('Génération SRT…');
     const srtPath = path.join(tmpDir, 'subtitles.srt');
     const narration = script.narration || '';
-    const blocks = narration.split('|').map(b => b.trim()).filter(Boolean);
+    const blocks    = narration.split('|').map(b => b.trim()).filter(Boolean);
     const subtitleBlocks = blocks.length >= 2 ? blocks : splitIntoChunks(narration, imagePaths.length);
 
     let srtContent = '';
@@ -394,7 +406,7 @@ app.post('/assemble-and-publish', async (req, res) => {
     });
     fs.writeFileSync(srtPath, srtContent);
 
-    // 7. Assemblage final
+    // 7. Assemblage final avec sous-titres
     console.log('Assemblage final…');
     const videoPath = path.join(tmpDir, 'video.mp4');
 
@@ -419,23 +431,23 @@ app.post('/assemble-and-publish', async (req, res) => {
         ])
         .output(videoPath)
         .on('start', () => console.log('ffmpeg final start'))
-        .on('progress', (p) => console.log('ffmpeg:', p.percent?.toFixed(0) + '%'))
+        .on('progress', p => console.log(`ffmpeg: ${p.percent?.toFixed(0)}%`))
         .on('end', () => { console.log('ffmpeg terminé ✓'); resolve(); })
-        .on('error', (err) => { console.error('ffmpeg error:', err.message); reject(err); })
+        .on('error', err => { console.error('ffmpeg error:', err.message); reject(err); })
         .run();
     });
 
-    console.log(`Vidéo assemblée (${Math.round(fs.statSync(videoPath).size/1024)}KB)`);
+    console.log(`Vidéo assemblée (${Math.round(fs.statSync(videoPath).size / 1024)}KB)`);
 
     // 8. Upload YouTube
     console.log('Upload YouTube…');
     const videoBuffer = fs.readFileSync(videoPath);
     const metadata = {
       snippet: {
-        title: script.title,
-        description: (script.description || '') + '\n\n#Shorts',
-        tags: ['Shorts', ...(script.tags || []), ...(tags || [])],
-        categoryId: '22',
+        title:           script.title,
+        description:     (script.description || '') + '\n\n#Shorts',
+        tags:            ['Shorts', ...(script.tags || []), ...(tags || [])],
+        categoryId:      '22',
         defaultLanguage: 'fr',
       },
       status: { privacyStatus: 'public', madeForKids: false },
@@ -454,8 +466,8 @@ app.post('/assemble-and-publish', async (req, res) => {
       {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${ytToken}`,
-          'Content-Type': `multipart/related; boundary="${boundary}"`,
+          'Authorization':  `Bearer ${ytToken}`,
+          'Content-Type':   `multipart/related; boundary="${boundary}"`,
           'Content-Length': body.length,
         },
         body,
@@ -491,17 +503,17 @@ function getAudioDuration(audioPath) {
 }
 
 function formatSRTTime(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
+  const h  = Math.floor(seconds / 3600);
+  const m  = Math.floor((seconds % 3600) / 60);
+  const s  = Math.floor(seconds % 60);
   const ms = Math.round((seconds % 1) * 1000);
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
 }
 
 function splitIntoChunks(text, n) {
-  const words = text.split(' ');
+  const words     = text.split(' ');
   const chunkSize = Math.ceil(words.length / n);
-  const chunks = [];
+  const chunks    = [];
   for (let i = 0; i < n; i++) {
     chunks.push(words.slice(i * chunkSize, (i + 1) * chunkSize).join(' '));
   }
@@ -512,23 +524,23 @@ function splitIntoChunks(text, n) {
 const agentHistory = [];
 
 app.post('/agent-run', async (req, res) => {
-  const { topic, tags, geminiKey, unrealKey, anthropicKey } = req.body;
+  const { topic, tags, geminiKey, anthropicKey } = req.body;
 
   const GEMINI = geminiKey    || process.env.GEMINI_API_KEY;
-  const UNREAL = unrealKey    || process.env.UNREAL_SPEECH_API_KEY;
   const CLAUDE = anthropicKey || process.env.ANTHROPIC_API_KEY;
 
-  if (!GEMINI || !UNREAL || !CLAUDE)
-    return res.status(400).json({ error: 'Clés API manquantes (Gemini, Unreal Speech, Anthropic)' });
+  if (!GEMINI || !CLAUDE)
+    return res.status(400).json({ error: 'Clés API manquantes (Gemini, Anthropic)' });
 
   const iterationId = Date.now();
   const log = [];
 
   try {
-    const lastGood = agentHistory.filter(h => h.score >= 7).sort((a, b) => b.score - a.score)[0];
+    const lastGood   = agentHistory.filter(h => h.score >= 7).sort((a, b) => b.score - a.score)[0];
     const basePrompt = lastGood ? `Améliore ce prompt qui a obtenu ${lastGood.score}/10 : ${lastGood.narrationPrompt}` : null;
     log.push('Phase 1 : récupération du meilleur prompt ✓');
 
+    // Phase 2 — Script
     log.push('Phase 2 : génération du script…');
     const scriptResp = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI}`,
@@ -546,21 +558,22 @@ app.post('/agent-run', async (req, res) => {
     const script = JSON.parse(scriptData.candidates?.[0]?.content?.parts?.[0]?.text.replace(/```json|```/g, '').trim());
     log.push('Phase 2 : script généré ✓');
 
-    log.push('Phase 3 : génération de la voix…');
-    const voiceResp = await fetch('https://api.v7.unrealspeech.com/speech', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${UNREAL}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ Text: script.narration, VoiceId: 'Scarlett', Bitrate: '192k', Speed: '0.3', Pitch: '1.05', OutputFormat: 'uri' }),
-    });
-    if (!voiceResp.ok) throw new Error('Erreur Unreal Speech');
-    const audioUrl = (await voiceResp.json()).OutputUri;
+    // Phase 3 — Voix edge-tts
+    log.push('Phase 3 : génération voix edge-tts…');
+    const tmpVoiceDir  = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-voice-'));
+    const voiceOutPath = path.join(tmpVoiceDir, 'voice.mp3');
+    await generateVoiceEdgeTTS(script.narration, 'fr-FR-HenriNeural', voiceOutPath);
+    const audioBase64 = fs.readFileSync(voiceOutPath).toString('base64');
+    fs.rmSync(tmpVoiceDir, { recursive: true });
     log.push('Phase 3 : voix générée ✓');
 
+    // Phase 4 — Images Reddit
     log.push('Phase 4 : recherche images Reddit…');
     const imageUrls = await fetchRedditImages(topic, 4);
     log.push(`Phase 4 : ${imageUrls.length} images Reddit ✓`);
 
-    log.push('Phase 5 : téléchargement frame pour analyse…');
+    // Phase 5 — Frame pour analyse Claude
+    log.push('Phase 5 : téléchargement frame…');
     let frameBase64 = null;
     try {
       const frameResp = await fetch(imageUrls[0], { timeout: 30000, headers: { 'User-Agent': 'AutoTube/1.0' } });
@@ -569,9 +582,10 @@ app.post('/agent-run', async (req, res) => {
         log.push('Phase 5 : frame extraite ✓');
       }
     } catch (e) {
-      log.push(`Phase 5 : erreur frame, analyse texte seule`);
+      log.push('Phase 5 : frame indisponible, analyse texte seule');
     }
 
+    // Phase 6 — Analyse Claude
     log.push('Phase 6 : analyse qualité via Claude…');
     const claudeContent = [];
     if (frameBase64) claudeContent.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: frameBase64 } });
@@ -594,7 +608,13 @@ Réponds UNIQUEMENT en JSON valide :
     const analysis = JSON.parse(claudeData.content?.[0]?.text.replace(/```json|```/g, '').trim() || '{}');
     log.push(`Phase 6 : score ${analysis.score}/10 ✓`);
 
-    const iteration = { id: iterationId, date: new Date().toISOString(), topic, tags, script, audioUrl, imageUrls, analysis, score: analysis.score, narrationPrompt: script.narration, log, status: 'pending' };
+    // Phase 7 — Sauvegarde
+    const iteration = {
+      id: iterationId, date: new Date().toISOString(),
+      topic, tags, script, audioBase64, imageUrls, analysis,
+      score: analysis.score, narrationPrompt: script.narration,
+      log, status: 'pending',
+    };
     agentHistory.unshift(iteration);
     if (agentHistory.length > 20) agentHistory.pop();
     log.push('Phase 7 : itération sauvegardée ✓');
@@ -627,11 +647,6 @@ Réponds UNIQUEMENT en JSON valide :
 {"title":"Titre 40 chars","description":"2 phrases + #Shorts","tags":["Shorts","tag1"],"narration":"blocs séparés par |","imageSearchQueries":["query1","query2","query3","query4"],"thumbnailPrompt":"scène impactante"}`;
 }
 
-// ── QUOTA ────────────────────────────────────────────────
-app.get('/elevenlabs-quota', async (req, res) => {
-  res.json({ used: 0, total: 250000 });
-});
-
 app.listen(PORT, () => {
-  console.log(`AutoTube backend v12 — Reddit + Voix FR + Ken Burns + Sous-titres — port ${PORT}`);
+  console.log(`AutoTube backend v13 — edge-tts FR + Reddit + Ken Burns — port ${PORT}`);
 });
