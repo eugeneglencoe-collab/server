@@ -205,6 +205,7 @@ app.post('/generate-voice', async (req, res) => {
       `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`,
       {
         method: 'POST',
+        timeout: 30000,
         headers: {
           'xi-api-key':   elevenKey,
           'Content-Type': 'application/json',
@@ -358,7 +359,7 @@ app.post('/assemble-and-publish', async (req, res) => {
           .inputOptions(['-loop 1'])
           .outputOptions([
             `-t ${durationPerImage.toFixed(3)}`,
-            '-c:v libx264', '-preset ultrafast', '-crf 26',
+            '-c:v libx264', '-preset veryfast', '-crf 23',
             '-pix_fmt yuv420p', `-r ${fps}`,
             `-vf ${zoomFilter},setsar=1`,
             '-threads 1', '-an',
@@ -382,7 +383,7 @@ app.post('/assemble-and-publish', async (req, res) => {
       ffmpeg()
         .input(concatPath)
         .inputOptions(['-f concat', '-safe 0'])
-        .outputOptions(['-c:v libx264', '-preset ultrafast', '-crf 26', '-pix_fmt yuv420p', '-an', '-threads 1'])
+        .outputOptions(['-c:v libx264', '-preset veryfast', '-crf 23', '-pix_fmt yuv420p', '-an', '-threads 1'])
         .output(concatVideoPath)
         .on('end', resolve)
         .on('error', reject)
@@ -409,10 +410,10 @@ app.post('/assemble-and-publish', async (req, res) => {
     const videoPath = path.join(tmpDir, 'video.mp4');
 
     const subtitleStyle = [
-      'FontName=Arial', 'FontSize=18',
-      'PrimaryColour=&H00FFFFFF', 'OutlineColour=&H00000000',
-      'BackColour=&H80000000', 'Bold=1', 'Outline=2',
-      'Shadow=1', 'Alignment=2', 'MarginV=60',
+      'FontName=Arial', 'FontSize=36',
+      'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
+      'BackColour=&H00000000', 'Bold=1', 'Outline=4',
+      'Shadow=2', 'Alignment=2', 'MarginV=250',
     ].join(',');
 
     const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
@@ -422,7 +423,7 @@ app.post('/assemble-and-publish', async (req, res) => {
         .input(concatVideoPath)
         .input(audioPath)
         .outputOptions([
-          '-c:v libx264', '-preset ultrafast', '-crf 28',
+          '-c:v libx264', '-preset veryfast', '-crf 23',
           '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
           '-shortest', '-movflags +faststart', '-threads 1',
           `-vf subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`,
@@ -563,6 +564,7 @@ app.post('/agent-run', async (req, res) => {
       `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`,
       {
         method: 'POST',
+        timeout: 30000,
         headers: { 'xi-api-key': ELEVEN, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
         body: JSON.stringify({
           text: script.narration,
