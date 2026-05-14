@@ -116,7 +116,9 @@ app.post('/fetch-reddit-video', async (req, res) => {
   const { topic } = req.body;
   if (!topic) return res.status(400).json({ error: 'topic manquant' });
   try {
-    const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(topic)}&type=link&sort=hot&limit=20`);
+    const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(topic)}&type=link&sort=hot&limit=20`, {
+      headers: { 'User-Agent': 'AutoTube/1.0' }
+    });
     const data = await response.json();
     const posts = data.data?.children || [];
     const videoPosts = posts.filter(p => p.data.is_video && p.data.media?.reddit_video?.fallback_url);
