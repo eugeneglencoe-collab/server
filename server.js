@@ -474,24 +474,13 @@ app.post('/assemble-and-publish', async (req, res) => {
       });
     }
 
-    let hasAudio = await hasAudioStream(concatVideoPath);
-    // Si pas d'audio sur la vidéo, on en ajoute un silencieux pour garder l'index 0
-    if (!hasAudio) {
-      console.log('Ajout d\'une piste audio silencieuse à la vidéo source…');
-      const silentVidPath = path.join(tmpDir, 'silent_video.mp4');
-      await new Promise((resolve) => {
-        ffmpeg()
-          .input(concatVideoPath)
-          .input('anullsrc')
-          .inputOptions(['-f lavfi'])
-          .outputOptions(['-c:v copy', '-c:a aac', '-map 0:v:0', '-map 1:a:0', '-shortest'])
-          .output(silentVidPath)
-          .on('end', () => { concatVideoPath = silentVidPath; resolve(); })
-          .on('error', () => resolve())
-          .run();
-      });
-      hasAudio = true; // Maintenant elle a une piste (silencieuse)
+    let hasAudio = false;
+    try {
+      hasAudio = await hasAudioStream(concatVideoPath);
+    } catch (e) {
+      console.log('Erreur check audio:', e.message);
     }
+    console.log(`Vidéo source a de l'audio : ${hasAudio}`);
 
     const subtitleStyle = [
       'FontName=Arial', 'FontSize=10', 'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
@@ -514,12 +503,14 @@ app.post('/assemble-and-publish', async (req, res) => {
       f.input(bgmPath).inputOptions(['-stream_loop', '-1']);
 
       const format = 'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo';
+      const a0_in = hasAudio ? '[0:a]' : 'anullsrc=r=44100:cl=stereo';
+      
       const filterComplex = [
         `[0:v]${videoUrl ? 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,' : '' }subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'[vout]`,
-        `[0:a]volume=0.6,${format}[a0]`,
+        `${a0_in}volume=0.6,${format}[a0]`,
         `[1:a]volume=1.0,${format}[a1]`,
         `[2:a]volume=0.8,${format}[a2]`,
-        `[a0][a1][a2]amix=inputs=3:duration=shortest:dropout_transition=0[aout]`
+        `[a0][a1][a2]amix=inputs=3:duration=shortest[aout]`
       ];
 
       f.complexFilter(filterComplex.join(';'))
