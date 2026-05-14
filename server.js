@@ -112,26 +112,74 @@ app.post('/fetch-reddit-images', async (req, res) => {
   }
 });
 
+app.post('/fetch-reddit-video', async (req, res) => {
+  const { topic } = req.body;
+  if (!topic) return res.status(400).json({ error: 'topic manquant' });
+  try {
+    const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(topic)}&type=link&sort=hot&limit=20`);
+    const data = await response.json();
+    const posts = data.data?.children || [];
+    const videoPosts = posts.filter(p => p.data.is_video && p.data.media?.reddit_video?.fallback_url);
+    if (videoPosts.length === 0) return res.status(404).json({ error: 'Aucune vidéo trouvée pour ce sujet' });
+    const post = videoPosts[Math.floor(Math.random() * videoPosts.length)].data;
+    res.json({
+      title: post.title,
+      videoUrl: post.media.reddit_video.fallback_url
+    });
+  } catch (err) {
+    console.error('Reddit video fetch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── GEMINI — Génération de script SHORTS ─────────────────
 app.post('/generate-script', async (req, res) => {
-  const { topic, tags, duration, apiKey } = req.body;
+  const { topic, tags, duration, apiKey, customPrompt, mode } = req.body;
   if (!topic) return res.status(400).json({ error: 'topic manquant' });
 
   const geminiKey = apiKey || process.env.GEMINI_API_KEY;
   if (!geminiKey) return res.status(400).json({ error: 'Clé Gemini manquante' });
 
-  const prompt = `Tu es un expert en création de contenu YouTube Shorts francophone viral, spécialisé dans la maximisation de la rétention d'audience.
+  let prompt = '';
+  
+  if (mode === '2') {
+    prompt = `Tu es un expert en création de contenu YouTube Shorts de réaction (react) francophone viral.
+
+Génère un commentaire hilarant ou fascinant pour un YouTube Short. 
+Sujet / Titre de la vidéo originale trouvée sur Reddit : "${topic}"
+Niche / Tags : ${(tags||[]).join(', ')}
+
+RÉTENTION — RÈGLES CRITIQUES :
+- La première phrase doit agir comme un "hook" de réaction (ex: "Attendez de voir ce qu'il se passe à la fin", "Je n'étais pas prêt pour ça").
+- Ton très dynamique, amusé ou choqué, comme un vrai streamer ou réacteur YouTube.
+- Vocabulaire 100% français de France métropolitaine, moderne, fluide.
+- Longueur totale : 40 à 60 mots.
+- Ne sépare pas par des blocs, écris juste un seul texte fluide.
+
+Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
+{
+  "title": "Titre 40 chars max, accrocheur, crée de la curiosité, sans hashtag",
+  "description": "2 phrases percutantes + hashtags #Shorts #[niche]",
+  "tags": ["Shorts", "tag1", "tag2", "tag3"],
+  "narration": "Texte complet du commentaire de 40-60 mots sans séparateurs"
+}`;
+  } else {
+    const defaultRules = `- La première phrase doit créer une TENSION IMMÉDIATE — une promesse, un mystère, une contradiction choquante
+- Chaque bloc doit se terminer sur une micro-tension qui force à rester
+- Ton fascinant, naturel et immersif : écris comme un excellent conteur sur YouTube qui raconte une histoire captivante.
+- Vocabulaire 100% français de France métropolitaine : phrases fluides et bien construites — JAMAIS de québécismes
+- Zéro mot de remplissage : chaque mot doit justifier sa présence
+- Construire vers un twist ou révélation finale surprenante`;
+
+    const rules = customPrompt || defaultRules;
+
+    prompt = `Tu es un expert en création de contenu YouTube Shorts francophone viral, spécialisé dans la maximisation de la rétention d'audience.
 
 Génère un script pour un YouTube Short sur : "${topic}"
 Niche / Tags : ${(tags||[]).join(', ')}
 
 RÉTENTION — RÈGLES CRITIQUES :
-- La première phrase doit créer une TENSION IMMÉDIATE — une promesse, un mystère, une contradiction choquante
-- Chaque bloc doit se terminer sur une micro-tension qui force à rester
-- Ton fascinant, naturel et immersif : écris comme un excellent conteur sur YouTube qui raconte une histoire captivante.
-- Vocabulaire 100% français de France métropolitaine : phrases fluides et bien construites — JAMAIS de québécismes
-- Zéro mot de remplissage : chaque mot doit justifier sa présence
-- Construire vers un twist ou révélation finale surprenante
+${rules}
 
 NARRATION :
 - Environ 60 à 80 mots au total pour laisser l'histoire respirer.
@@ -155,6 +203,7 @@ Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
   "imageSearchQueries": ["query bloc 1 en anglais", "query bloc 2", "query bloc 3", "query bloc 4"],
   "thumbnailPrompt": "description visuelle de la scène la plus impactante pour la miniature"
 }`;
+  }
 
   try {
     const response = await fetch(
@@ -219,141 +268,103 @@ app.get('/elevenlabs-quota', async (req, res) => {
 
 // ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE ────────────────────
 app.post('/assemble-and-publish', async (req, res) => {
-  const { imageUrls, audioBase64, audioUrl, script, tags, ytToken } = req.body;
-  if (!imageUrls || !imageUrls.length) return res.status(400).json({ error: 'imageUrls manquantes' });
+  const { imageUrls, videoUrl, audioBase64, audioUrl, script, tags, ytToken } = req.body;
+  if (!imageUrls?.length && !videoUrl) return res.status(400).json({ error: 'imageUrls ou videoUrl manquants' });
   if (!audioBase64 && !audioUrl)       return res.status(400).json({ error: 'audio manquant' });
   if (!ytToken)                        return res.status(400).json({ error: 'token YouTube manquant' });
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotube-'));
 
   try {
-    // 1. Télécharger et recadrer les images en 9:16
-    console.log(`Téléchargement de ${imageUrls.length} images…`);
-    const imagePaths = [];
-
-    for (let i = 0; i < imageUrls.length; i++) {
-      let imgBuffer = null;
-      const urlsToTry = [
-        imageUrls[i],
-        `https://picsum.photos/seed/${Date.now() + i}/768/1344`,
-      ];
-
-      for (const url of urlsToTry) {
-        try {
-          const imgResp = await fetch(url, { timeout: 30000, headers: { 'User-Agent': 'AutoTube/1.0' } });
-          if (!imgResp.ok) throw new Error(`Status ${imgResp.status}`);
-          imgBuffer = await imgResp.buffer();
-          if (imgBuffer.length > 5000) break;
-        } catch (e) {
-          console.log(`Image ${i+1} échec : ${e.message}`);
-          await new Promise(r => setTimeout(r, 1000));
-        }
-      }
-
-      if (!imgBuffer) throw new Error(`Image ${i+1} impossible à télécharger`);
-
-      const rawPath = path.join(tmpDir, `raw_${i}.jpg`);
-      const imgPath = path.join(tmpDir, `img_${i}.jpg`);
-      fs.writeFileSync(rawPath, imgBuffer);
-
-      await new Promise((resolve, reject) => {
-        ffmpeg()
-          .input(rawPath)
-          .outputOptions([
-            '-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1',
-            '-q:v 2',
-          ])
-          .output(imgPath)
-          .on('end', resolve)
-          .on('error', reject)
-          .run();
-      });
-
-      imagePaths.push(imgPath);
-      console.log(`Image ${i+1}/${imageUrls.length} ✓ recadrée 9:16`);
-    }
-
-    // 2. Préparer l'audio
-    console.log('Préparation audio…');
+    let concatVideoPath;
+    let durationPerImage = 0;
+    const fps = 24;
     const audioPath = path.join(tmpDir, 'audio.mp3');
 
+    // 1. Préparer l'audio
+    console.log('Préparation audio…');
     if (audioBase64) {
       fs.writeFileSync(audioPath, Buffer.from(audioBase64, 'base64'));
-      console.log('Audio base64 (ElevenLabs) écrit ✓');
     } else {
       const audioResp = await fetch(audioUrl, { timeout: 30000 });
-      if (!audioResp.ok) throw new Error(`Audio inaccessible : ${audioResp.status}`);
       fs.writeFileSync(audioPath, await audioResp.buffer());
-      console.log('Audio URL téléchargé ✓');
     }
+    const audioDuration = await getAudioDuration(audioPath);
 
-    // 3. Durée audio → durée par image
-    const audioDuration    = await getAudioDuration(audioPath);
-    const durationPerImage = audioDuration / imagePaths.length;
-    console.log(`Durée audio : ${audioDuration.toFixed(1)}s → ${durationPerImage.toFixed(2)}s/image`);
+    if (videoUrl) {
+      // MODE 2 : Vidéo Reddit
+      console.log('Mode 2: Téléchargement vidéo Reddit...');
+      const vidResp = await fetch(videoUrl, { timeout: 30000 });
+      if (!vidResp.ok) throw new Error('Vidéo Reddit inaccessible');
+      concatVideoPath = path.join(tmpDir, 'raw_reddit.mp4');
+      fs.writeFileSync(concatVideoPath, await vidResp.buffer());
+      durationPerImage = audioDuration; // 1 bloc logique
+    } else {
+      // MODE 1 : Images Ken Burns
+      console.log(`Mode 1: Téléchargement de ${imageUrls.length} images…`);
+      const imagePaths = [];
+      for (let i = 0; i < imageUrls.length; i++) {
+        let imgBuffer = null;
+        for (const url of [imageUrls[i], `https://picsum.photos/seed/${Date.now() + i}/768/1344`]) {
+          try {
+            const imgResp = await fetch(url, { timeout: 30000, headers: { 'User-Agent': 'AutoTube/1.0' } });
+            if (imgResp.ok) { imgBuffer = await imgResp.buffer(); break; }
+          } catch (e) {}
+        }
+        if (!imgBuffer) throw new Error(`Image ${i+1} introuvable`);
+        const rawPath = path.join(tmpDir, `raw_${i}.jpg`);
+        const imgPath = path.join(tmpDir, `img_${i}.jpg`);
+        fs.writeFileSync(rawPath, imgBuffer);
+        await new Promise((resolve, reject) => {
+          ffmpeg().input(rawPath).outputOptions(['-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1', '-q:v 2']).output(imgPath).on('end', resolve).on('error', reject).run();
+        });
+        imagePaths.push(imgPath);
+      }
 
-    // 4. Clips Ken Burns
-    console.log('Génération Ken Burns…');
-    const clipPaths = [];
-    const fps = 24;
+      durationPerImage = audioDuration / imagePaths.length;
+      console.log(`Génération Ken Burns… (${durationPerImage.toFixed(2)}s/image)`);
+      const clipPaths = [];
+      const kenBurnsEffects = [
+        (f) => `zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${f}:s=720x1280:fps=${fps}`,
+        (f) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,x+1)':y='ih/2-(ih/zoom/2)':d=${f}:s=720x1280:fps=${fps}`,
+        (f) => `zoompan=z='if(lte(zoom,1.0),1.3,max(zoom-0.0015,1.0))':x='iw/2-(iw/zoom/2)':y='0':d=${f}:s=720x1280:fps=${fps}`,
+        (f) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,max(x-1,0))':y='ih/2-(ih/zoom/2)':d=${f}:s=720x1280:fps=${fps}`,
+      ];
 
-    const kenBurnsEffects = [
-      (f) => `zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${f}:s=720x1280:fps=${fps}`,
-      (f) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,x+1)':y='ih/2-(ih/zoom/2)':d=${f}:s=720x1280:fps=${fps}`,
-      (f) => `zoompan=z='if(lte(zoom,1.0),1.3,max(zoom-0.0015,1.0))':x='iw/2-(iw/zoom/2)':y='0':d=${f}:s=720x1280:fps=${fps}`,
-      (f) => `zoompan=z='min(zoom+0.001,1.2)':x='if(gte(zoom,1.2),x,max(x-1,0))':y='ih/2-(ih/zoom/2)':d=${f}:s=720x1280:fps=${fps}`,
-    ];
+      for (let i = 0; i < imagePaths.length; i++) {
+        const clipPath = path.join(tmpDir, `clip_${i}.mp4`);
+        const frames = Math.ceil(durationPerImage * fps);
+        const zoomFilter = kenBurnsEffects[i % kenBurnsEffects.length](frames);
+        await new Promise((resolve, reject) => {
+          ffmpeg().input(imagePaths[i]).inputOptions(['-loop 1']).outputOptions([`-t ${durationPerImage.toFixed(3)}`, '-c:v libx264', '-preset ultrafast', '-crf 28', '-pix_fmt yuv420p', `-r ${fps}`, `-vf ${zoomFilter},setsar=1`, '-threads 1', '-an']).output(clipPath).on('end', resolve).on('error', reject).run();
+        });
+        clipPaths.push(clipPath);
+      }
 
-    for (let i = 0; i < imagePaths.length; i++) {
-      const clipPath   = path.join(tmpDir, `clip_${i}.mp4`);
-      const frames     = Math.ceil(durationPerImage * fps);
-      const zoomFilter = kenBurnsEffects[i % kenBurnsEffects.length](frames);
-
+      console.log('Concaténation…');
+      const concatPath = path.join(tmpDir, 'concat.txt');
+      concatVideoPath = path.join(tmpDir, 'concat_video.mp4');
+      fs.writeFileSync(concatPath, clipPaths.map(p => `file '${p}'`).join('\n'));
       await new Promise((resolve, reject) => {
-        ffmpeg()
-          .input(imagePaths[i])
-          .inputOptions(['-loop 1'])
-          .outputOptions([
-            `-t ${durationPerImage.toFixed(3)}`,
-            '-c:v libx264', '-preset ultrafast', '-crf 28',
-            '-pix_fmt yuv420p', `-r ${fps}`,
-            `-vf ${zoomFilter},setsar=1`,
-            '-threads 1', '-an',
-          ])
-          .output(clipPath)
-          .on('end', resolve)
-          .on('error', reject)
-          .run();
+        ffmpeg().input(concatPath).inputOptions(['-f concat', '-safe 0']).outputOptions(['-c:v libx264', '-preset ultrafast', '-crf 28', '-pix_fmt yuv420p', '-an', '-threads 1']).output(concatVideoPath).on('end', resolve).on('error', reject).run();
       });
-      clipPaths.push(clipPath);
-      console.log(`Clip ${i+1}/${imagePaths.length} Ken Burns ✓`);
     }
 
-    // 5. Concaténation
-    console.log('Concaténation…');
-    const concatPath      = path.join(tmpDir, 'concat.txt');
-    const concatVideoPath = path.join(tmpDir, 'concat_video.mp4');
-    fs.writeFileSync(concatPath, clipPaths.map(p => `file '${p}'`).join('\n'));
-
-    await new Promise((resolve, reject) => {
-      ffmpeg()
-        .input(concatPath)
-        .inputOptions(['-f concat', '-safe 0'])
-        .outputOptions(['-c:v libx264', '-preset ultrafast', '-crf 28', '-pix_fmt yuv420p', '-an', '-threads 1'])
-        .output(concatVideoPath)
-        .on('end', resolve)
-        .on('error', reject)
-        .run();
-    });
-
-    // 6. Sous-titres SRT
+    // 2. SRT
     console.log('Génération SRT…');
-    const srtPath   = path.join(tmpDir, 'subtitles.srt');
+    const srtPath = path.join(tmpDir, 'subtitles.srt');
     const narration = script.narration || '';
-    const blocks    = narration.split('|').map(b => b.trim()).filter(Boolean);
-    const subtitleBlocks = blocks.length >= 2 ? blocks : splitIntoChunks(narration, imagePaths.length);
-
-    let srtContent  = '';
+    
+    let subtitleBlocks;
+    if (videoUrl) {
+      subtitleBlocks = splitIntoChunks(narration, 4); // Divide speech into 4 chunks for subtitles anyway
+      durationPerImage = audioDuration / subtitleBlocks.length;
+    } else {
+      const blocks = narration.split('|').map(b => b.trim()).filter(Boolean);
+      subtitleBlocks = blocks.length >= 2 ? blocks : splitIntoChunks(narration, imageUrls.length);
+    }
+    
+    let srtContent = '';
     let currentTime = 0;
     subtitleBlocks.forEach((block, i) => {
       srtContent += `${i + 1}\n${formatSRTTime(currentTime)} --> ${formatSRTTime(currentTime + durationPerImage - 0.1)}\n${block}\n\n`;
@@ -361,28 +372,29 @@ app.post('/assemble-and-publish', async (req, res) => {
     });
     fs.writeFileSync(srtPath, srtContent);
 
-    // 7. Assemblage final
+    // 3. Assemblage final
     console.log('Assemblage final…');
     const videoPath = path.join(tmpDir, 'video.mp4');
-
     const subtitleStyle = [
-      'FontName=Arial', 'FontSize=32',
-      'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
-      'BackColour=&H00000000', 'Bold=1', 'Outline=4',
-      'Shadow=2', 'Alignment=2', 'MarginV=150', 'MarginL=40', 'MarginR=40',
+      'FontName=Arial', 'FontSize=32', 'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
+      'BackColour=&H00000000', 'Bold=1', 'Outline=4', 'Shadow=2', 'Alignment=2', 'MarginV=150', 'MarginL=40', 'MarginR=40',
     ].join(',');
-
     const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
     await new Promise((resolve, reject) => {
-      ffmpeg()
-        .input(concatVideoPath)
-        .input(audioPath)
+      let f = ffmpeg().input(concatVideoPath);
+      if (videoUrl) f = f.inputOptions(['-stream_loop -1']); // boucle si vidéo trop courte
+      
+      let vfFilter = videoUrl 
+        ? `scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`
+        : `subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`;
+
+      f.input(audioPath)
         .outputOptions([
           '-c:v libx264', '-preset ultrafast', '-crf 28',
           '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
           '-shortest', '-movflags +faststart', '-threads 1',
-          `-vf subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`,
+          `-vf ${vfFilter}`,
         ])
         .output(videoPath)
         .on('start', () => console.log('ffmpeg final start'))
