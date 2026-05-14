@@ -390,11 +390,20 @@ app.post('/assemble-and-publish', async (req, res) => {
     fs.writeFileSync(srtPath, srtContent);
 
     // 3. Assemblage final
-    console.log('Assemblage final…');
+    console.log('Assemblage final (avec musique)…');
     const videoPath = path.join(tmpDir, 'video.mp4');
+
+    const bgmPath = path.join(tmpDir, 'bgm.mp3');
+    try {
+      const bgmResp = await fetch('https://freepd.com/music/Chill%20Urban.mp3', { timeout: 15000 });
+      if (bgmResp.ok) fs.writeFileSync(bgmPath, await bgmResp.buffer());
+    } catch (e) {
+      console.log('Musique non téléchargée, on continue sans', e.message);
+    }
+
     const subtitleStyle = [
-      'FontName=Arial', 'FontSize=32', 'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
-      'BackColour=&H00000000', 'Bold=1', 'Outline=4', 'Shadow=2', 'Alignment=2', 'MarginV=150', 'MarginL=40', 'MarginR=40',
+      'FontName=Arial', 'FontSize=22', 'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
+      'BackColour=&H80000000', 'Bold=1', 'Outline=3', 'Shadow=2', 'Alignment=2', 'MarginV=70', 'MarginL=40', 'MarginR=40',
     ].join(',');
     const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
@@ -406,13 +415,27 @@ app.post('/assemble-and-publish', async (req, res) => {
         ? `scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`
         : `subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`;
 
-      f.input(audioPath)
-        .outputOptions([
-          '-c:v libx264', '-preset ultrafast', '-crf 28',
-          '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
-          '-shortest', '-movflags +faststart', '-threads 1',
-          `-vf ${vfFilter}`,
-        ])
+      f.input(audioPath);
+      
+      let outputOptions = [
+        '-c:v libx264', '-preset ultrafast', '-crf 28',
+        '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
+        '-shortest', '-movflags +faststart', '-threads 1',
+        `-vf ${vfFilter}`
+      ];
+
+      if (fs.existsSync(bgmPath)) {
+        f.input(bgmPath);
+        // [1:a] = voix (100%), [2:a] = musique (8%, boucle infinie). amix mixe les deux.
+        outputOptions.push('-filter_complex', '[1:a]volume=1.0[v1];[2:a]volume=0.08,aloop=loop=-1:size=2e9[v2];[v1][v2]amix=inputs=2:duration=shortest[aout]');
+        outputOptions.push('-map', '0:v:0'); // Prend que la vidéo (supprime le son original Reddit)
+        outputOptions.push('-map', '[aout]'); // Prend le mix final
+      } else {
+        outputOptions.push('-map', '0:v:0'); // Prend que la vidéo
+        outputOptions.push('-map', '1:a:0'); // Prend que la voix de l'IA
+      }
+
+      f.outputOptions(outputOptions)
         .output(videoPath)
         .on('start', () => console.log('ffmpeg final start'))
         .on('progress', p => console.log(`ffmpeg: ${p.percent?.toFixed(0)}%`))
