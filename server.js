@@ -128,23 +128,23 @@ Niche / Tags : ${(tags||[]).join(', ')}
 RÉTENTION — RÈGLES CRITIQUES :
 - La première phrase doit créer une TENSION IMMÉDIATE — une promesse, un mystère, une contradiction choquante
 - Chaque bloc doit se terminer sur une micro-tension qui force à rester
-- Rythme haché : phrases courtes, maximum 8 mots par phrase, jamais deux longues à la suite
-- Vocabulaire 100% français de France métropolitaine : "vachement", "carrément", "c'est dingue", "franchement" — JAMAIS de québécismes
+- Ton fascinant, naturel et immersif : écris comme un excellent conteur sur YouTube qui raconte une histoire captivante.
+- Vocabulaire 100% français de France métropolitaine : phrases fluides et bien construites — JAMAIS de québécismes
 - Zéro mot de remplissage : chaque mot doit justifier sa présence
 - Construire vers un twist ou révélation finale surprenante
 
 NARRATION :
-- EXACTEMENT 40 à 50 mots
-- 4 blocs séparés par | , un bloc par image, 10-12 mots par bloc
+- Environ 60 à 80 mots au total pour laisser l'histoire respirer.
+- 4 blocs séparés par | , un bloc par image, environ 15-20 mots par bloc.
 - Bloc 1 : accroche choc — fait contre-intuitif ou question rhétorique percutante
 - Bloc 2 : développement qui creuse la tension, révèle quelque chose d'inattendu
 - Bloc 3 : twist ou fait clé qui renverse ce qu'on croyait savoir
-- Bloc 4 : chute mémorable, percutante, max 8 mots — laisse une impression durable
+- Bloc 4 : chute mémorable, percutante — laisse une impression durable
 - JAMAIS "Abonne-toi", "Commente", "Partage"
 
 MOTS-CLÉS REDDIT :
 - Génère 4 requêtes de recherche en anglais pour trouver des images Reddit en lien avec chaque bloc
-- Chaque requête = 2-3 mots précis qui décrivent visuellement le contenu du bloc
+- Chaque requête = 2-3 mots précis qui décrivent visuellement le contenu du bloc de la meilleure façon possible
 
 Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
 {
@@ -366,10 +366,10 @@ app.post('/assemble-and-publish', async (req, res) => {
     const videoPath = path.join(tmpDir, 'video.mp4');
 
     const subtitleStyle = [
-      'FontName=Arial', 'FontSize=36',
+      'FontName=Arial', 'FontSize=32',
       'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
       'BackColour=&H00000000', 'Bold=1', 'Outline=4',
-      'Shadow=2', 'Alignment=2', 'MarginV=250',
+      'Shadow=2', 'Alignment=2', 'MarginV=150', 'MarginL=40', 'MarginR=40',
     ].join(',');
 
     const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
@@ -594,9 +594,9 @@ app.post('/agent-validate', (req, res) => {
 
 function buildAgentPrompt(topic, tags, basePrompt) {
   const amelioration = basePrompt ? `\nUTILISE ce prompt et améliore-le : "${basePrompt}"\n` : '';
-  return `Tu es un expert YouTube Shorts viral francophone.${amelioration}
+  return `Tu es un expert YouTube Shorts viral francophone et un excellent conteur d'histoires.${amelioration}
 Génère un script sur : "${topic}" — Tags : ${(tags || []).join(', ')}
-RÈGLES : narration 40-50 mots, 4 blocs séparés par |, accroche choc bloc 1, twist bloc 3, chute mémorable bloc 4, vocabulaire français de France, JAMAIS de CTA.
+RÈGLES : narration fluide et captivante de 60-80 mots, 4 blocs de 15-20 mots séparés par |, accroche choc bloc 1, twist bloc 3, chute mémorable bloc 4, vocabulaire français de France, JAMAIS de CTA.
 Réponds UNIQUEMENT en JSON valide :
 {"title":"Titre 40 chars","description":"2 phrases + #Shorts","tags":["Shorts","tag1"],"narration":"blocs séparés par |","imageSearchQueries":["query1","query2","query3","query4"],"thumbnailPrompt":"scène impactante"}`;
 }
