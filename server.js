@@ -315,6 +315,34 @@ app.post('/assemble-and-publish', async (req, res) => {
       if (!vidResp.ok) throw new Error('Vidéo Reddit inaccessible');
       concatVideoPath = path.join(tmpDir, 'raw_reddit.mp4');
       fs.writeFileSync(concatVideoPath, await vidResp.buffer());
+
+      // TENTATIVE RÉCUPÉRATION AUDIO REDDIT (souvent séparé)
+      try {
+        const audioUrlReddit = videoUrl.replace(/DASH_[0-9]+\.mp4/, 'DASH_audio.mp4').split('?')[0];
+        console.log(`Tentative téléchargement audio Reddit : ${audioUrlReddit}`);
+        const audResp = await fetch(audioUrlReddit, { timeout: 10000 });
+        if (audResp.ok) {
+          const redditAudioPath = path.join(tmpDir, 'reddit_audio.mp3');
+          fs.writeFileSync(redditAudioPath, await audResp.buffer());
+          const mergedPath = path.join(tmpDir, 'merged_reddit.mp4');
+          console.log('Fusion vidéo + audio Reddit…');
+          await new Promise((resolve) => {
+            ffmpeg()
+              .input(concatVideoPath)
+              .input(redditAudioPath)
+              .outputOptions(['-c:v copy', '-c:a aac', '-map 0:v:0', '-map 1:a:0', '-shortest'])
+              .output(mergedPath)
+              .on('end', () => { concatVideoPath = mergedPath; resolve(); })
+              .on('error', (err) => { console.log('Echec fusion audio Reddit:', err.message); resolve(); })
+              .run();
+          });
+        } else {
+          console.log('Pas d\'audio séparé trouvé pour cette vidéo Reddit.');
+        }
+      } catch (e) {
+        console.log('Erreur lors de la récupération audio Reddit:', e.message);
+      }
+
       durationPerImage = audioDuration; // 1 bloc logique
     } else {
       // MODE 1 : Images Ken Burns
@@ -412,7 +440,7 @@ app.post('/assemble-and-publish', async (req, res) => {
     const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
     await new Promise((resolve, reject) => {
-      let f = ffmpeg().input(concatVideoPath);
+      let f = ffmpeg().input(concatVideoPath); // input 0
       if (videoUrl) f = f.inputOptions(['-stream_loop -1']); // boucle si vidéo trop courte
       
       let vfFilter = videoUrl 
@@ -428,17 +456,17 @@ app.post('/assemble-and-publish', async (req, res) => {
       filterComplex += '[1:a]volume=1.0[v_voice];';
       inputs.push('[v_voice]');
 
-      // Son source
+      // Son source (Reddit ou images Ken Burns)
       if (hasAudio) {
-        filterComplex += '[0:a]volume=0.3[v_source];';
+        filterComplex += '[0:a]volume=0.4[v_source];';
         inputs.push('[v_source]');
       }
 
       // Musique
       const hasBgm = fs.existsSync(bgmPath);
       if (hasBgm) {
-        f.input(bgmPath); // input 2
-        filterComplex += '[2:a]volume=0.15,aloop=loop=-1:size=2e9[v_bgm];';
+        f.input(bgmPath).inputOptions(['-stream_loop -1']); // input 2, bouclée
+        filterComplex += '[2:a]volume=0.2[v_bgm];';
         inputs.push('[v_bgm]');
       }
 
@@ -456,7 +484,9 @@ app.post('/assemble-and-publish', async (req, res) => {
 
       f.outputOptions(outputOptions)
         .output(videoPath)
-        .on('start', (cmd) => console.log('ffmpeg command:', cmd))
+        .on('start', (cmd) => {
+          console.log('FFmpeg command:', cmd);
+        })
         .on('progress', p => console.log(`ffmpeg: ${p.percent?.toFixed(0)}%`))
         .on('end', () => { console.log('ffmpeg terminé ✓'); resolve(); })
         .on('error', err => { console.error('ffmpeg error:', err.message); reject(err); })
