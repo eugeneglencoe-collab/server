@@ -116,13 +116,26 @@ app.post('/fetch-reddit-video', async (req, res) => {
   const { topic } = req.body;
   if (!topic) return res.status(400).json({ error: 'topic manquant' });
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 secondes max
+    
     const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(topic)}&type=link&sort=hot&limit=20`, {
-      headers: { 'User-Agent': 'AutoTube/1.0' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 AutoTube/1.0' },
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Statut ${response.status} - ${text.substring(0, 100)}`);
+    }
+
     const data = await response.json();
     const posts = data.data?.children || [];
     const videoPosts = posts.filter(p => p.data.is_video && p.data.media?.reddit_video?.fallback_url);
+    
     if (videoPosts.length === 0) return res.status(404).json({ error: 'Aucune vidéo trouvée pour ce sujet' });
+    
     const post = videoPosts[Math.floor(Math.random() * videoPosts.length)].data;
     res.json({
       title: post.title,
@@ -130,7 +143,7 @@ app.post('/fetch-reddit-video', async (req, res) => {
     });
   } catch (err) {
     console.error('Reddit video fetch error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.name === 'AbortError' ? 'La recherche Reddit a pris trop de temps (Timeout)' : err.message });
   }
 });
 
