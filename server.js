@@ -374,23 +374,24 @@ app.post('/assemble-and-publish', async (req, res) => {
     
     let subtitleBlocks;
     if (videoUrl) {
-      subtitleBlocks = splitIntoChunks(narration, 4); // Divide speech into 4 chunks for subtitles anyway
-      durationPerImage = audioDuration / subtitleBlocks.length;
+      subtitleBlocks = splitIntoWordChunks(narration, 5); // 5-6 words per block
     } else {
       const blocks = narration.split('|').map(b => b.trim()).filter(Boolean);
-      subtitleBlocks = blocks.length >= 2 ? blocks : splitIntoChunks(narration, imageUrls.length);
+      subtitleBlocks = blocks.length >= 2 ? blocks : splitIntoWordChunks(narration, 5);
     }
+    
+    const blockDuration = audioDuration / subtitleBlocks.length;
     
     let srtContent = '';
     let currentTime = 0;
     subtitleBlocks.forEach((block, i) => {
-      srtContent += `${i + 1}\n${formatSRTTime(currentTime)} --> ${formatSRTTime(currentTime + durationPerImage - 0.1)}\n${block}\n\n`;
-      currentTime += durationPerImage;
+      srtContent += `${i + 1}\n${formatSRTTime(currentTime)} --> ${formatSRTTime(currentTime + blockDuration - 0.05)}\n${block}\n\n`;
+      currentTime += blockDuration;
     });
     fs.writeFileSync(srtPath, srtContent);
 
     // 3. Assemblage final
-    console.log('Assemblage final (avec musique)…');
+    console.log('Assemblage final (avec son source + musique)…');
     const videoPath = path.join(tmpDir, 'video.mp4');
 
     const bgmPath = path.join(tmpDir, 'bgm.mp3');
@@ -400,6 +401,9 @@ app.post('/assemble-and-publish', async (req, res) => {
     } catch (e) {
       console.log('Musique non téléchargée, on continue sans', e.message);
     }
+
+    const hasAudio = await hasAudioStream(concatVideoPath);
+    console.log(`Vidéo source a de l'audio : ${hasAudio}`);
 
     const subtitleStyle = [
       'FontName=Arial', 'FontSize=10', 'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
@@ -415,29 +419,44 @@ app.post('/assemble-and-publish', async (req, res) => {
         ? `scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`
         : `subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`;
 
-      f.input(audioPath);
+      f.input(audioPath); // input 1
       
+      let filterComplex = '';
+      let inputs = [];
+
+      // Voix (toujours présente)
+      filterComplex += '[1:a]volume=1.0[v_voice];';
+      inputs.push('[v_voice]');
+
+      // Son source
+      if (hasAudio) {
+        filterComplex += '[0:a]volume=0.3[v_source];';
+        inputs.push('[v_source]');
+      }
+
+      // Musique
+      const hasBgm = fs.existsSync(bgmPath);
+      if (hasBgm) {
+        f.input(bgmPath); // input 2
+        filterComplex += '[2:a]volume=0.15,aloop=loop=-1:size=2e9[v_bgm];';
+        inputs.push('[v_bgm]');
+      }
+
+      filterComplex += `${inputs.join('')}amix=inputs=${inputs.length}:duration=shortest[aout]`;
+
       let outputOptions = [
         '-c:v libx264', '-preset ultrafast', '-crf 28',
         '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
         '-shortest', '-movflags +faststart', '-threads 1',
-        `-vf ${vfFilter}`
+        `-vf ${vfFilter}`,
+        '-filter_complex', filterComplex,
+        '-map', '0:v:0',
+        '-map', '[aout]'
       ];
-
-      if (fs.existsSync(bgmPath)) {
-        f.input(bgmPath);
-        // [1:a] = voix (100%), [2:a] = musique (8%, boucle infinie). amix mixe les deux.
-        outputOptions.push('-filter_complex', '[1:a]volume=1.0[v1];[2:a]volume=0.08,aloop=loop=-1:size=2e9[v2];[v1][v2]amix=inputs=2:duration=shortest[aout]');
-        outputOptions.push('-map', '0:v:0'); // Prend que la vidéo (supprime le son original Reddit)
-        outputOptions.push('-map', '[aout]'); // Prend le mix final
-      } else {
-        outputOptions.push('-map', '0:v:0'); // Prend que la vidéo
-        outputOptions.push('-map', '1:a:0'); // Prend que la voix de l'IA
-      }
 
       f.outputOptions(outputOptions)
         .output(videoPath)
-        .on('start', () => console.log('ffmpeg final start'))
+        .on('start', (cmd) => console.log('ffmpeg command:', cmd))
         .on('progress', p => console.log(`ffmpeg: ${p.percent?.toFixed(0)}%`))
         .on('end', () => { console.log('ffmpeg terminé ✓'); resolve(); })
         .on('error', err => { console.error('ffmpeg error:', err.message); reject(err); })
@@ -517,14 +536,23 @@ function formatSRTTime(seconds) {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
 }
 
-function splitIntoChunks(text, n) {
-  const words     = text.split(' ');
-  const chunkSize = Math.ceil(words.length / n);
-  const chunks    = [];
-  for (let i = 0; i < n; i++) {
-    chunks.push(words.slice(i * chunkSize, (i + 1) * chunkSize).join(' '));
+function splitIntoWordChunks(text, wordsPerChunk = 5) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const chunks = [];
+  for (let i = 0; i < words.length; i += wordsPerChunk) {
+    chunks.push(words.slice(i, i + wordsPerChunk).join(' '));
   }
-  return chunks.filter(Boolean);
+  return chunks;
+}
+
+function hasAudioStream(videoPath) {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(videoPath, (err, metadata) => {
+      if (err) return resolve(false);
+      const hasAudio = metadata.streams.some(s => s.codec_type === 'audio');
+      resolve(hasAudio);
+    });
+  });
 }
 
 // ── AGENT IA ──────────────────────────────────────────────
