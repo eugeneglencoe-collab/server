@@ -315,7 +315,7 @@ app.post('/assemble-and-publish', async (req, res) => {
           .inputOptions(['-loop 1'])
           .outputOptions([
             `-t ${durationPerImage.toFixed(3)}`,
-            '-c:v libx264', '-preset veryfast', '-crf 23',
+            '-c:v libx264', '-preset ultrafast', '-crf 28',
             '-pix_fmt yuv420p', `-r ${fps}`,
             `-vf ${zoomFilter},setsar=1`,
             '-threads 1', '-an',
@@ -339,7 +339,7 @@ app.post('/assemble-and-publish', async (req, res) => {
       ffmpeg()
         .input(concatPath)
         .inputOptions(['-f concat', '-safe 0'])
-        .outputOptions(['-c:v libx264', '-preset veryfast', '-crf 23', '-pix_fmt yuv420p', '-an', '-threads 1'])
+        .outputOptions(['-c:v libx264', '-preset ultrafast', '-crf 28', '-pix_fmt yuv420p', '-an', '-threads 1'])
         .output(concatVideoPath)
         .on('end', resolve)
         .on('error', reject)
@@ -379,7 +379,7 @@ app.post('/assemble-and-publish', async (req, res) => {
         .input(concatVideoPath)
         .input(audioPath)
         .outputOptions([
-          '-c:v libx264', '-preset veryfast', '-crf 23',
+          '-c:v libx264', '-preset ultrafast', '-crf 28',
           '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
           '-shortest', '-movflags +faststart', '-threads 1',
           `-vf subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`,
