@@ -119,7 +119,7 @@ app.post('/fetch-reddit-video', async (req, res) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 secondes max
     
-    const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(topic)}&type=link&sort=hot&limit=20`, {
+    const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(topic)}&type=link&sort=hot&limit=100`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 AutoTube/1.0' },
       signal: controller.signal
     });
@@ -134,7 +134,9 @@ app.post('/fetch-reddit-video', async (req, res) => {
     const posts = data.data?.children || [];
     const videoPosts = posts.filter(p => p.data.is_video && p.data.media?.reddit_video?.fallback_url);
     
-    if (videoPosts.length === 0) return res.status(404).json({ error: 'Aucune vidéo trouvée pour ce sujet' });
+    if (videoPosts.length === 0) {
+      return res.status(404).json({ error: 'Aucune vidéo trouvée sur Reddit. Astuce : utilise un mot-clé très court et en ANGLAIS (ex: "funny dog", "fail compilation", "dashcam")' });
+    }
     
     const post = videoPosts[Math.floor(Math.random() * videoPosts.length)].data;
     res.json({
