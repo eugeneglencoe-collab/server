@@ -503,7 +503,7 @@ app.post('/assemble-and-publish', async (req, res) => {
       f.input(bgmPath).inputOptions(['-stream_loop', '-1']);
 
       const format = 'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo';
-      const a0_in = hasAudio ? '[0:a]' : 'anullsrc=r=44100:cl=stereo';
+      const a0_in = hasAudio ? '[0:a]' : 'anullsrc=r=44100:channel_layout=stereo,';
       
       const filterComplex = [
         `[0:v]${videoUrl ? 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,' : '' }subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'[vout]`,
