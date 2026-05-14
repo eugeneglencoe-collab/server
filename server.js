@@ -424,23 +424,54 @@ app.post('/assemble-and-publish', async (req, res) => {
 
     const bgmPath = path.join(tmpDir, 'bgm.mp3');
     let hasBgm = false;
+    
+    // Tentative 1: Musique demandée (Conquest of Paradise)
     try {
-      const bgmUrl = 'https://freepd.com/music/The%20Minstrel.mp3';
-      const bgmResp = await fetch(bgmUrl, { timeout: 15000 });
+      const bgmUrl = 'https://archive.org/download/tvtunes_21753/Vangelis%20-%201492%20-%20Conquest%20Of%20Paradise.mp3';
+      const bgmResp = await fetch(bgmUrl, { timeout: 20000 });
       if (bgmResp.ok) {
-        const buffer = await bgmResp.buffer();
-        fs.writeFileSync(bgmPath, buffer);
-        console.log(`BGM téléchargé : ${bgmUrl} (${Math.round(buffer.length/1024)}KB)`);
+        fs.writeFileSync(bgmPath, await bgmResp.buffer());
+        console.log('BGM Conquest of Paradise téléchargé ✓');
         hasBgm = true;
       }
     } catch (e) {
-      console.log('Erreur BGM fetch:', e.message);
+      console.log('Erreur BGM Conquest:', e.message);
     }
     
-    // Si pas de BGM, on crée un silence de 1s pour garder l'index 2
+    // Tentative 2: Silence MP3 externe
     if (!hasBgm) {
-      console.log('Utilisation d\'un silence pour le BGM (fallback)');
-      await new Promise(r => ffmpeg().input('anullsrc').inputOptions(['-f lavfi', '-t 1']).outputOptions(['-c:a aac']).output(bgmPath).on('end', r).on('error', r).run());
+      try {
+        const silenceUrl = 'https://github.com/anars/blank-audio/raw/master/1-second-of-silence.mp3';
+        const silResp = await fetch(silenceUrl, { timeout: 10000 });
+        if (silResp.ok) {
+          fs.writeFileSync(bgmPath, await silResp.buffer());
+          console.log('Silence BGM téléchargé ✓');
+          hasBgm = true;
+        }
+      } catch (e) {
+        console.log('Erreur BGM 2:', e.message);
+      }
+    }
+    
+    // Tentative 3: Génération locale (ultime recours)
+    if (!hasBgm) {
+      console.log('Génération locale de silence BGM…');
+      await new Promise((resolve) => {
+        ffmpeg()
+          .input('anullsrc')
+          .inputOptions(['-f lavfi', '-t 1'])
+          .outputOptions(['-c:a aac', '-f adts'])
+          .output(bgmPath)
+          .on('end', () => { hasBgm = true; resolve(); })
+          .on('error', (err) => { 
+            console.log('Echec génération silence:', err.message);
+            // On crée un fichier bidon pour éviter l'erreur de fichier manquant, 
+            // même si FFmpeg risque de râler sur le format
+            fs.writeFileSync(bgmPath, Buffer.alloc(1024)); 
+            resolve(); 
+          })
+          .run();
+      });
     }
 
     let hasAudio = await hasAudioStream(concatVideoPath);
