@@ -424,17 +424,17 @@ app.post('/assemble-and-publish', async (req, res) => {
 
     const bgmPath = path.join(tmpDir, 'bgm.mp3');
     try {
-      const bgmUrl = 'https://freepd.com/music/Lofi%20Hiphop%2002.mp3';
+      const bgmUrl = 'https://freepd.com/music/The%20Minstrel.mp3';
       const bgmResp = await fetch(bgmUrl, { timeout: 15000 });
       if (bgmResp.ok) {
         const buffer = await bgmResp.buffer();
         fs.writeFileSync(bgmPath, buffer);
         console.log(`BGM téléchargé : ${bgmUrl} (${Math.round(buffer.length/1024)}KB)`);
       } else {
-        console.log('Erreur téléchargement BGM:', bgmResp.status);
+        console.log(`Erreur téléchargement BGM (${bgmResp.status})`);
       }
     } catch (e) {
-      console.log('Musique non téléchargée, on continue sans', e.message);
+      console.log('Erreur BGM fetch:', e.message);
     }
 
     const hasAudio = await hasAudioStream(concatVideoPath);
@@ -448,7 +448,7 @@ app.post('/assemble-and-publish', async (req, res) => {
 
     await new Promise((resolve, reject) => {
       let f = ffmpeg().input(concatVideoPath); // input 0
-      if (videoUrl) f = f.inputOptions(['-stream_loop -1']); // boucle si vidéo trop courte
+      if (videoUrl) f = f.inputOptions(['-stream_loop', '-1']); 
       
       let vfFilter = videoUrl 
         ? `scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`
@@ -456,38 +456,40 @@ app.post('/assemble-and-publish', async (req, res) => {
 
       f.input(audioPath); // input 1
       
-      let filterComplex = '';
-      let inputs = [];
+      let filterComplex = [];
+      let amixInputs = [];
 
-      // Format commun pour éviter les bugs amix
       const format = 'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo';
 
-      // Voix (toujours présente)
-      filterComplex += `[1:a]volume=1.0,${format}[v_voice];`;
-      inputs.push('[v_voice]');
+      // 1. Voix (Narration)
+      filterComplex.push(`[1:a]volume=1.0,${format}[a1]`);
+      amixInputs.push('[a1]');
 
-      // Son source (Reddit ou images Ken Burns)
+      // 0. Son source (Vidéo)
       if (hasAudio) {
-        filterComplex += `[0:a]volume=0.4,${format}[v_source];`;
-        inputs.push('[v_source]');
+        filterComplex.push(`[0:a]volume=0.8,${format}[a0]`);
+        amixInputs.push('[a0]');
       }
 
-      // Musique
+      // 2. Musique (BGM)
       const hasBgm = fs.existsSync(bgmPath) && fs.statSync(bgmPath).size > 1000;
       if (hasBgm) {
-        f.input(bgmPath).inputOptions(['-stream_loop -1']); // input 2, bouclée
-        filterComplex += `[2:a]volume=0.25,${format}[v_bgm];`;
-        inputs.push('[v_bgm]');
+        f.input(bgmPath).inputOptions(['-stream_loop', '-1']); // input 2
+        filterComplex.push(`[2:a]volume=0.6,${format}[a2]`);
+        amixInputs.push('[a2]');
       }
 
-      filterComplex += `${inputs.join('')}amix=inputs=${inputs.length}:duration=shortest:dropout_transition=3[aout]`;
+      // Mixage final
+      filterComplex.push(`${amixInputs.join('')}amix=inputs=${amixInputs.length}:duration=longest:dropout_transition=0[aout]`);
 
       let outputOptions = [
         '-c:v libx264', '-preset ultrafast', '-crf 28',
         '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
-        '-shortest', '-movflags +faststart', '-threads 1',
+        '-shortest', // Crucial : coupe la vidéo à la fin du flux le plus court (la narration car les autres bouclent)
+        '-movflags +faststart',
+        '-threads 1',
         `-vf ${vfFilter}`,
-        '-filter_complex', filterComplex,
+        '-filter_complex', filterComplex.join(';'),
         '-map', '0:v:0',
         '-map', '[aout]'
       ];
@@ -495,7 +497,7 @@ app.post('/assemble-and-publish', async (req, res) => {
       f.outputOptions(outputOptions)
         .output(videoPath)
         .on('start', (cmd) => {
-          console.log('FFmpeg final command:', cmd);
+          console.log('FFmpeg FINAL COMMAND:', cmd);
         })
         .on('progress', p => console.log(`ffmpeg: ${p.percent?.toFixed(0)}%`))
         .on('end', () => { console.log('ffmpeg terminé ✓'); resolve(); })
