@@ -189,76 +189,32 @@ Réponds UNIQUEMENT en JSON valide, sans texte avant ou après :
   }
 });
 
-// ── ELEVENLABS — Synthèse vocale française ────────────────
-// Voix : bts16wA7hWMfnlEIHuRo (voix française choisie par l'utilisateur)
-const ELEVENLABS_VOICE_ID = 'bts16wA7hWMfnlEIHuRo';
-
+// ── EDGE TTS — Synthèse vocale gratuite ────────────────
 app.post('/generate-voice', async (req, res) => {
-  const { text, apiKey } = req.body;
+  const { text } = req.body;
   if (!text) return res.status(400).json({ error: 'text manquant' });
 
-  const elevenKey = apiKey || process.env.ELEVENLABS_API_KEY;
-  if (!elevenKey) return res.status(400).json({ error: 'Clé ElevenLabs manquante' });
-
   try {
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`,
-      {
-        method: 'POST',
-        timeout: 30000,
-        headers: {
-          'xi-api-key':   elevenKey,
-          'Content-Type': 'application/json',
-          'Accept':       'audio/mpeg',
-        },
-        body: JSON.stringify({
-          text,
-          model_id: 'eleven_multilingual_v2', // Meilleur modèle pour le français
-          voice_settings: {
-            stability:        0.4,  // Plus bas = plus expressif et vivant
-            similarity_boost: 0.85, // Fidélité à la voix choisie
-            style:            0.3,  // Légère expressivité stylistique
-            use_speaker_boost: true,
-          },
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      return res.status(response.status).json({ error: err.detail?.message || err.detail || response.status });
-    }
-
-    // Récupérer le stream audio et le convertir en base64
-    const audioBuffer = await response.buffer();
+    const { EdgeTTS } = require('node-edge-tts');
+    const tts = new EdgeTTS({ voice: 'fr-FR-HenriNeural', lang: 'fr-FR' });
+    const tmpPath = path.join(os.tmpdir(), `edge_tts_${Date.now()}.mp3`);
+    
+    await tts.ttsPromise(text, tmpPath);
+    
+    const audioBuffer = fs.readFileSync(tmpPath);
     const audioBase64 = audioBuffer.toString('base64');
+    fs.unlinkSync(tmpPath);
 
     res.json({ audioBase64, mimeType: 'audio/mpeg' });
-
   } catch (err) {
-    console.error('ElevenLabs error:', err);
+    console.error('EdgeTTS error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── QUOTA ELEVENLABS ──────────────────────────────────────
+// ── QUOTA TTS (Edge TTS est illimité) ──────────────────────
 app.get('/elevenlabs-quota', async (req, res) => {
-  const elevenKey = process.env.ELEVENLABS_API_KEY;
-  if (!elevenKey) return res.json({ used: 0, total: 10000 });
-
-  try {
-    const response = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
-      headers: { 'xi-api-key': elevenKey },
-    });
-    const data = await response.json();
-    res.json({
-      used:  data.character_count        || 0,
-      total: data.character_limit        || 10000,
-      reset: data.next_character_count_reset_unix || null,
-    });
-  } catch (err) {
-    res.json({ used: 0, total: 10000 });
-  }
+  res.json({ used: 0, total: 999999, reset: null });
 });
 
 // ── ASSEMBLAGE VIDÉO + UPLOAD YOUTUBE ────────────────────
@@ -558,23 +514,14 @@ app.post('/agent-run', async (req, res) => {
     const script = JSON.parse(scriptData.candidates?.[0]?.content?.parts?.[0]?.text.replace(/```json|```/g, '').trim());
     log.push('Phase 2 : script généré ✓');
 
-    // Phase 3 — Voix ElevenLabs
-    log.push('Phase 3 : génération voix ElevenLabs…');
-    const voiceResp = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`,
-      {
-        method: 'POST',
-        timeout: 30000,
-        headers: { 'xi-api-key': ELEVEN, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
-        body: JSON.stringify({
-          text: script.narration,
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: { stability: 0.4, similarity_boost: 0.85, style: 0.3, use_speaker_boost: true },
-        }),
-      }
-    );
-    if (!voiceResp.ok) throw new Error('Erreur ElevenLabs voix');
-    const audioBase64 = (await voiceResp.buffer()).toString('base64');
+    // Phase 3 — Voix Edge TTS
+    log.push('Phase 3 : génération voix Edge TTS…');
+    const { EdgeTTS } = require('node-edge-tts');
+    const tts = new EdgeTTS({ voice: 'fr-FR-HenriNeural', lang: 'fr-FR' });
+    const tmpPath = path.join(os.tmpdir(), `edge_tts_agent_${Date.now()}.mp3`);
+    await tts.ttsPromise(script.narration, tmpPath);
+    const audioBase64 = fs.readFileSync(tmpPath).toString('base64');
+    fs.unlinkSync(tmpPath);
     log.push('Phase 3 : voix générée ✓');
 
     // Phase 4 — Images Reddit
