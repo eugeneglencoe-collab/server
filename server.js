@@ -119,7 +119,7 @@ app.post('/fetch-reddit-video', async (req, res) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 secondes max
     
-    const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(topic)}&type=link&sort=hot&limit=100`, {
+    const response = await fetch(`https://www.reddit.com/r/KidsAreFuckingStupid/search.json?q=${encodeURIComponent(topic)}&restrict_sr=1&sort=hot&limit=100`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 AutoTube/1.0' },
       signal: controller.signal
     });
@@ -424,8 +424,15 @@ app.post('/assemble-and-publish', async (req, res) => {
 
     const bgmPath = path.join(tmpDir, 'bgm.mp3');
     try {
-      const bgmResp = await fetch('https://freepd.com/music/Chill%20Urban.mp3', { timeout: 15000 });
-      if (bgmResp.ok) fs.writeFileSync(bgmPath, await bgmResp.buffer());
+      const bgmUrl = 'https://freepd.com/music/Lofi%20Hiphop%2002.mp3';
+      const bgmResp = await fetch(bgmUrl, { timeout: 15000 });
+      if (bgmResp.ok) {
+        const buffer = await bgmResp.buffer();
+        fs.writeFileSync(bgmPath, buffer);
+        console.log(`BGM téléchargé : ${bgmUrl} (${Math.round(buffer.length/1024)}KB)`);
+      } else {
+        console.log('Erreur téléchargement BGM:', bgmResp.status);
+      }
     } catch (e) {
       console.log('Musique non téléchargée, on continue sans', e.message);
     }
@@ -452,25 +459,28 @@ app.post('/assemble-and-publish', async (req, res) => {
       let filterComplex = '';
       let inputs = [];
 
+      // Format commun pour éviter les bugs amix
+      const format = 'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo';
+
       // Voix (toujours présente)
-      filterComplex += '[1:a]volume=1.0[v_voice];';
+      filterComplex += `[1:a]volume=1.0,${format}[v_voice];`;
       inputs.push('[v_voice]');
 
       // Son source (Reddit ou images Ken Burns)
       if (hasAudio) {
-        filterComplex += '[0:a]volume=0.4[v_source];';
+        filterComplex += `[0:a]volume=0.4,${format}[v_source];`;
         inputs.push('[v_source]');
       }
 
       // Musique
-      const hasBgm = fs.existsSync(bgmPath);
+      const hasBgm = fs.existsSync(bgmPath) && fs.statSync(bgmPath).size > 1000;
       if (hasBgm) {
         f.input(bgmPath).inputOptions(['-stream_loop -1']); // input 2, bouclée
-        filterComplex += '[2:a]volume=0.2[v_bgm];';
+        filterComplex += `[2:a]volume=0.25,${format}[v_bgm];`;
         inputs.push('[v_bgm]');
       }
 
-      filterComplex += `${inputs.join('')}amix=inputs=${inputs.length}:duration=shortest[aout]`;
+      filterComplex += `${inputs.join('')}amix=inputs=${inputs.length}:duration=shortest:dropout_transition=3[aout]`;
 
       let outputOptions = [
         '-c:v libx264', '-preset ultrafast', '-crf 28',
@@ -485,7 +495,7 @@ app.post('/assemble-and-publish', async (req, res) => {
       f.outputOptions(outputOptions)
         .output(videoPath)
         .on('start', (cmd) => {
-          console.log('FFmpeg command:', cmd);
+          console.log('FFmpeg final command:', cmd);
         })
         .on('progress', p => console.log(`ffmpeg: ${p.percent?.toFixed(0)}%`))
         .on('end', () => { console.log('ffmpeg terminé ✓'); resolve(); })
