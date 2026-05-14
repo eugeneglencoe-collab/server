@@ -423,6 +423,7 @@ app.post('/assemble-and-publish', async (req, res) => {
     const videoPath = path.join(tmpDir, 'video.mp4');
 
     const bgmPath = path.join(tmpDir, 'bgm.mp3');
+    let hasBgm = false;
     try {
       const bgmUrl = 'https://freepd.com/music/The%20Minstrel.mp3';
       const bgmResp = await fetch(bgmUrl, { timeout: 15000 });
@@ -430,15 +431,36 @@ app.post('/assemble-and-publish', async (req, res) => {
         const buffer = await bgmResp.buffer();
         fs.writeFileSync(bgmPath, buffer);
         console.log(`BGM téléchargé : ${bgmUrl} (${Math.round(buffer.length/1024)}KB)`);
-      } else {
-        console.log(`Erreur téléchargement BGM (${bgmResp.status})`);
+        hasBgm = true;
       }
     } catch (e) {
       console.log('Erreur BGM fetch:', e.message);
     }
+    
+    // Si pas de BGM, on crée un silence de 1s pour garder l'index 2
+    if (!hasBgm) {
+      console.log('Utilisation d\'un silence pour le BGM (fallback)');
+      await new Promise(r => ffmpeg().input('anullsrc').inputOptions(['-f lavfi', '-t 1']).outputOptions(['-c:a aac']).output(bgmPath).on('end', r).on('error', r).run());
+    }
 
-    const hasAudio = await hasAudioStream(concatVideoPath);
-    console.log(`Vidéo source a de l'audio : ${hasAudio}`);
+    let hasAudio = await hasAudioStream(concatVideoPath);
+    // Si pas d'audio sur la vidéo, on en ajoute un silencieux pour garder l'index 0
+    if (!hasAudio) {
+      console.log('Ajout d\'une piste audio silencieuse à la vidéo source…');
+      const silentVidPath = path.join(tmpDir, 'silent_video.mp4');
+      await new Promise((resolve) => {
+        ffmpeg()
+          .input(concatVideoPath)
+          .input('anullsrc')
+          .inputOptions(['-f lavfi'])
+          .outputOptions(['-c:v copy', '-c:a aac', '-map 0:v:0', '-map 1:a:0', '-shortest'])
+          .output(silentVidPath)
+          .on('end', () => { concatVideoPath = silentVidPath; resolve(); })
+          .on('error', () => resolve())
+          .run();
+      });
+      hasAudio = true; // Maintenant elle a une piste (silencieuse)
+    }
 
     const subtitleStyle = [
       'FontName=Arial', 'FontSize=10', 'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
@@ -447,58 +469,39 @@ app.post('/assemble-and-publish', async (req, res) => {
     const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
     await new Promise((resolve, reject) => {
-      let f = ffmpeg().input(concatVideoPath); // input 0
-      if (videoUrl) f = f.inputOptions(['-stream_loop', '-1']); 
+      // Nous avons TOUJOURS 3 entrées maintenant :
+      // 0: Vidéo (avec piste audio, potentiellement silencieuse)
+      // 1: Narration
+      // 2: BGM (bouclée, potentiellement silencieuse)
       
-      let vfFilter = videoUrl 
-        ? `scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`
-        : `subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'`;
-
-      f.input(audioPath); // input 1
+      const f = ffmpeg();
+      f.input(concatVideoPath);
+      if (videoUrl) f.inputOptions(['-stream_loop', '-1']);
       
-      let filterComplex = [];
-      let amixInputs = [];
+      f.input(audioPath);
+      
+      f.input(bgmPath).inputOptions(['-stream_loop', '-1']);
 
       const format = 'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo';
-
-      // 1. Voix (Narration)
-      filterComplex.push(`[1:a]volume=1.0,${format}[a1]`);
-      amixInputs.push('[a1]');
-
-      // 0. Son source (Vidéo)
-      if (hasAudio) {
-        filterComplex.push(`[0:a]volume=0.8,${format}[a0]`);
-        amixInputs.push('[a0]');
-      }
-
-      // 2. Musique (BGM)
-      const hasBgm = fs.existsSync(bgmPath) && fs.statSync(bgmPath).size > 1000;
-      if (hasBgm) {
-        f.input(bgmPath).inputOptions(['-stream_loop', '-1']); // input 2
-        filterComplex.push(`[2:a]volume=0.6,${format}[a2]`);
-        amixInputs.push('[a2]');
-      }
-
-      // Mixage final
-      filterComplex.push(`${amixInputs.join('')}amix=inputs=${amixInputs.length}:duration=longest:dropout_transition=0[aout]`);
-
-      let outputOptions = [
-        '-c:v libx264', '-preset ultrafast', '-crf 28',
-        '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
-        '-shortest', // Crucial : coupe la vidéo à la fin du flux le plus court (la narration car les autres bouclent)
-        '-movflags +faststart',
-        '-threads 1',
-        `-vf ${vfFilter}`,
-        '-filter_complex', filterComplex.join(';'),
-        '-map', '0:v:0',
-        '-map', '[aout]'
+      const filterComplex = [
+        `[0:v]${videoUrl ? 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,' : '' }subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'[vout]`,
+        `[0:a]volume=0.6,${format}[a0]`,
+        `[1:a]volume=1.0,${format}[a1]`,
+        `[2:a]volume=0.8,${format}[a2]`,
+        `[a0][a1][a2]amix=inputs=3:duration=shortest:dropout_transition=0[aout]`
       ];
 
-      f.outputOptions(outputOptions)
+      f.complexFilter(filterComplex.join(';'))
+        .outputOptions([
+          '-c:v libx264', '-preset ultrafast', '-crf 28',
+          '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
+          '-movflags +faststart',
+          '-threads 1'
+        ])
+        .map('[vout]')
+        .map('[aout]')
         .output(videoPath)
-        .on('start', (cmd) => {
-          console.log('FFmpeg FINAL COMMAND:', cmd);
-        })
+        .on('start', (cmd) => console.log('FFmpeg FINAL COMMAND:', cmd))
         .on('progress', p => console.log(`ffmpeg: ${p.percent?.toFixed(0)}%`))
         .on('end', () => { console.log('ffmpeg terminé ✓'); resolve(); })
         .on('error', err => { console.error('ffmpeg error:', err.message); reject(err); })
