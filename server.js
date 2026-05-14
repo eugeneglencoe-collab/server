@@ -402,8 +402,8 @@ app.post('/assemble-and-publish', async (req, res) => {
     }
 
     const subtitleStyle = [
-      'FontName=Arial', 'FontSize=22', 'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
-      'BackColour=&H80000000', 'Bold=1', 'Outline=3', 'Shadow=2', 'Alignment=2', 'MarginV=70', 'MarginL=40', 'MarginR=40',
+      'FontName=Arial', 'FontSize=10', 'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
+      'BackColour=&H80000000', 'Bold=1', 'Outline=3', 'Shadow=2', 'Alignment=2', 'MarginV=35', 'MarginL=40', 'MarginR=40',
     ].join(',');
     const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
