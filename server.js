@@ -518,6 +518,7 @@ app.post('/assemble-and-publish', async (req, res) => {
           '-c:v libx264', '-preset ultrafast', '-crf 28',
           '-c:a aac', '-b:a 128k', '-pix_fmt yuv420p',
           '-movflags +faststart',
+          '-shortest',
           '-threads 1'
         ])
         .map('[vout]')
