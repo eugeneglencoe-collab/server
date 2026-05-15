@@ -429,13 +429,8 @@ app.post('/assemble-and-publish', async (req, res) => {
     const bgmPath = path.join(tmpDir, 'bgm.mp3');
     let hasBgm = false;
     
-    // Liste de musiques aléatoires
-    const playlist = [
-      { name: 'Vangelis - Conquest of Paradise', url: 'https://archive.org/download/tvtunes_21753/Vangelis%20-%201492%20-%20Conquest%20Of%20Paradise.mp3' },
-      { name: 'Mozart - Figaro Overture', url: 'https://archive.org/download/TheMarriageOfFigaroOvertureklemperer/MozartLeNozzeDiFigaroOverture-Klemperer_vbr.mp3' },
-      { name: 'Funny Meme Music', url: 'https://freepd.com/music/Monkeys%20Spinning%20Monkeys.mp3' }
-    ];
-    const selectedMusic = playlist[Math.floor(Math.random() * playlist.length)];
+    // Musique unique (Funny Meme Music)
+    const selectedMusic = { name: 'Funny Meme Music', url: 'https://freepd.com/music/Monkeys%20Spinning%20Monkeys.mp3' };
 
     // Tentative 1: Musique de la playlist
     try {
@@ -518,7 +513,7 @@ app.post('/assemble-and-publish', async (req, res) => {
       
       const filterComplex = [
         `[0:v]${videoUrl ? 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,' : '' }subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'[vout]`,
-        `[0:a]volume=0.4,${format}[a0]`,
+        `${a0_in}volume=0.4,${format}[a0]`,
         `[1:a]volume=1.0,${format}[a1]`,
         `[2:a]volume=0.35,${format}[a2]`,
         `[a0][a1][a2]amix=inputs=3:duration=shortest[aout]`
