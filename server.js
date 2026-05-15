@@ -12,6 +12,10 @@ ffmpeg.setFfmpegPath(ffmpegStatic);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Cache anti-doublon (pour éviter la double publication en cas de retry Render)
+const recentUploads = new Set();
+setInterval(() => recentUploads.clear(), 5 * 60 * 1000); // Clear toutes les 5 min
+
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
@@ -425,17 +429,24 @@ app.post('/assemble-and-publish', async (req, res) => {
     const bgmPath = path.join(tmpDir, 'bgm.mp3');
     let hasBgm = false;
     
-    // Tentative 1: Musique demandée (Conquest of Paradise)
+    // Liste de musiques aléatoires
+    const playlist = [
+      { name: 'Vangelis - Conquest of Paradise', url: 'https://archive.org/download/tvtunes_21753/Vangelis%20-%201492%20-%20Conquest%20Of%20Paradise.mp3' },
+      { name: 'Mozart - Figaro Overture', url: 'https://archive.org/download/TheMarriageOfFigaroOvertureklemperer/MozartLeNozzeDiFigaroOverture-Klemperer_vbr.mp3' },
+      { name: 'Funny Meme Music', url: 'https://freepd.com/music/Monkeys%20Spinning%20Monkeys.mp3' }
+    ];
+    const selectedMusic = playlist[Math.floor(Math.random() * playlist.length)];
+
+    // Tentative 1: Musique de la playlist
     try {
-      const bgmUrl = 'https://archive.org/download/tvtunes_21753/Vangelis%20-%201492%20-%20Conquest%20Of%20Paradise.mp3';
-      const bgmResp = await fetch(bgmUrl, { timeout: 20000 });
+      const bgmResp = await fetch(selectedMusic.url, { timeout: 20000 });
       if (bgmResp.ok) {
         fs.writeFileSync(bgmPath, await bgmResp.buffer());
-        console.log('BGM Conquest of Paradise téléchargé ✓');
+        console.log(`BGM choisi : ${selectedMusic.name} ✓`);
         hasBgm = true;
       }
     } catch (e) {
-      console.log('Erreur BGM Conquest:', e.message);
+      console.log('Erreur BGM Playlist:', e.message);
     }
     
     // Tentative 2: Silence MP3 externe
@@ -484,7 +495,7 @@ app.post('/assemble-and-publish', async (req, res) => {
 
     const subtitleStyle = [
       'FontName=Arial', 'FontSize=10', 'PrimaryColour=&H0000FFFF', 'OutlineColour=&H00000000',
-      'BackColour=&H80000000', 'Bold=1', 'Outline=3', 'Shadow=2', 'Alignment=2', 'MarginV=35', 'MarginL=40', 'MarginR=40',
+      'BackColour=&H80000000', 'Bold=1', 'Outline=3', 'Shadow=2', 'Alignment=2', 'MarginV=50', 'MarginL=40', 'MarginR=40',
     ].join(',');
     const srtPathEscaped = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
@@ -507,9 +518,9 @@ app.post('/assemble-and-publish', async (req, res) => {
       
       const filterComplex = [
         `[0:v]${videoUrl ? 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,' : '' }subtitles=${srtPathEscaped}:force_style='${subtitleStyle}'[vout]`,
-        `${a0_in}volume=0.6,${format}[a0]`,
+        `[0:a]volume=0.4,${format}[a0]`,
         `[1:a]volume=1.0,${format}[a1]`,
-        `[2:a]volume=0.8,${format}[a2]`,
+        `[2:a]volume=0.35,${format}[a2]`,
         `[a0][a1][a2]amix=inputs=3:duration=shortest[aout]`
       ];
 
@@ -535,6 +546,15 @@ app.post('/assemble-and-publish', async (req, res) => {
 
     // 8. Upload YouTube
     console.log('Upload YouTube…');
+    
+    // Vérification anti-doublon
+    const uploadKey = script.title + script.narration.slice(0, 50);
+    if (recentUploads.has(uploadKey)) {
+      console.log('⚠ Doublon détecté, annulation de l\'upload');
+      return res.json({ success: true, message: 'Déjà publié (cache)' });
+    }
+    recentUploads.add(uploadKey);
+
     const videoBuffer = fs.readFileSync(videoPath);
     const metadata = {
       snippet: {
