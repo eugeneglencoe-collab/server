@@ -748,6 +748,43 @@ Réponds UNIQUEMENT en JSON valide :
   }
 });
 
+// ── AGENT AUDITEUR ─────────────────────────────────────────
+app.post('/audit-video', async (req, res) => {
+  const { script, topic, apiKey } = req.body;
+  try {
+    const prompt = `Tu es un auditeur expert en YouTube Shorts viraux. 
+Analyse ce script généré pour le sujet "${topic}" :
+${JSON.stringify(script)}
+
+Évalue les points suivants :
+1. Rétention : L'accroche est-elle assez forte ?
+2. Rythme : Le découpage des blocs est-il fluide ?
+3. Cohérence visuelle : Les requêtes d'images sont-elles pertinentes ?
+4. Potentiel viral : Sur une échelle de 1 à 10.
+
+Réponds UNIQUEMENT en JSON :
+{
+  "score": 8,
+  "analysis": "...",
+  "recommendations": ["...", "..."],
+  "technical_adjustment": "Ex: Augmenter MarginV de 5 points"
+}`;
+
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    });
+
+    const data = await resp.json();
+    const resultText = data.candidates[0].content.parts[0].text;
+    const result = JSON.parse(resultText.replace(/```json|```/g, ''));
+    res.json({ success: true, audit: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/agent-history', (req, res) => {
   res.json({ iterations: agentHistory, total: agentHistory.length });
 });
